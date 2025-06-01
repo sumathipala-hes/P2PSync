@@ -1,16 +1,32 @@
 package com.example.p2psync
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.p2psync.data.P2PDevice
+import com.example.p2psync.ui.P2PSyncViewModel
 import com.example.p2psync.ui.theme.P2PSyncTheme
 
 class MainActivity : ComponentActivity() {
@@ -19,11 +35,263 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             P2PSyncTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    Greeting(
-                        name = "Android",
-                        modifier = Modifier.padding(innerPadding)
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    P2PSyncApp()
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
+    val context = LocalContext.current
+    
+    // State collection
+    val isWifiP2pEnabled by viewModel.isWifiP2pEnabled.collectAsState()
+    val discoveredDevices by viewModel.discoveredDevices.collectAsState()
+    val connectionStatus by viewModel.connectionStatus.collectAsState()
+    val isDiscovering by viewModel.isDiscovering.collectAsState()
+    val permissionsGranted by viewModel.permissionsGranted.collectAsState()
+    val statusMessage by viewModel.statusMessage.collectAsState()
+    val thisDevice by viewModel.thisDevice.collectAsState()
+
+    // Permission launcher
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val allGranted = permissions.values.all { it }
+        if (allGranted) {
+            viewModel.checkPermissions()
+            Toast.makeText(context, "Permissions granted", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(context, "Permissions required for WiFi Direct", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    // Request permissions if not granted
+    LaunchedEffect(permissionsGranted) {
+        if (!permissionsGranted) {
+            permissionLauncher.launch(viewModel.getRequiredPermissions())
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { 
+                    Text(
+                        "P2P Sync",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold
                     )
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    titleContentColor = MaterialTheme.colorScheme.onPrimary
+                )
+            )
+        }
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Status Card
+            StatusCard(
+                isWifiP2pEnabled = isWifiP2pEnabled,
+                connectionStatus = connectionStatus,
+                statusMessage = statusMessage,
+                thisDevice = thisDevice
+            )
+
+            // Control Buttons
+            ControlButtons(
+                isDiscovering = isDiscovering,
+                permissionsGranted = permissionsGranted,
+                onStartDiscovery = { viewModel.startDiscovery() },
+                onStopDiscovery = { viewModel.stopDiscovery() },
+                onDisconnect = { viewModel.disconnect() }
+            )
+
+            // Devices List
+            DevicesList(
+                devices = discoveredDevices,
+                onDeviceClick = { device -> viewModel.connectToDevice(device) }
+            )
+        }
+    }
+}
+
+@Composable
+fun StatusCard(
+    isWifiP2pEnabled: Boolean,
+    connectionStatus: String,
+    statusMessage: String,
+    thisDevice: P2PDevice?
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                "Status",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = if (isWifiP2pEnabled) Icons.Default.Wifi else Icons.Default.WifiOff,
+                    contentDescription = null,
+                    tint = if (isWifiP2pEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                )
+                Text(
+                    "WiFi Direct: ${if (isWifiP2pEnabled) "Enabled" else "Disabled"}",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.DeviceHub,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    "Connection: $connectionStatus",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+
+            if (thisDevice != null) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PhoneAndroid,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        "This Device: ${thisDevice.deviceName}",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+
+            Divider()
+            
+            Text(
+                statusMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+fun ControlButtons(
+    isDiscovering: Boolean,
+    permissionsGranted: Boolean,
+    onStartDiscovery: () -> Unit,
+    onStopDiscovery: () -> Unit,
+    onDisconnect: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Button(
+            onClick = if (isDiscovering) onStopDiscovery else onStartDiscovery,
+            enabled = permissionsGranted,
+            modifier = Modifier.weight(1f)
+        ) {
+            if (isDiscovering) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    strokeWidth = 2.dp
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Stop Discovery")
+            } else {
+                Icon(Icons.Default.Search, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Start Discovery")
+            }
+        }
+
+        OutlinedButton(
+            onClick = onDisconnect,
+            modifier = Modifier.weight(1f)
+        ) {
+            Icon(Icons.Default.LinkOff, contentDescription = null)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Disconnect")
+        }
+    }
+}
+
+@Composable
+fun DevicesList(
+    devices: List<P2PDevice>,
+    onDeviceClick: (P2PDevice) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp)
+        ) {
+            Text(
+                "Discovered Devices (${devices.size})",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            if (devices.isEmpty()) {
+                Text(
+                    "No devices found\nTap 'Start Discovery' to search for nearby devices",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(32.dp)
+                )
+            } else {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(devices) { device ->
+                        DeviceItem(
+                            device = device,
+                            onClick = { onDeviceClick(device) }
+                        )
+                    }
                 }
             }
         }
@@ -31,17 +299,48 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(
-        text = "Hello $name!",
-        modifier = modifier
-    )
-}
-
-@Preview(showBackground = true)
-@Composable
-fun GreetingPreview() {
-    P2PSyncTheme {
-        Greeting("Android")
+fun DeviceItem(
+    device: P2PDevice,
+    onClick: () -> Unit
+) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column {
+                Text(
+                    device.deviceName,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    device.deviceAddress,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+              AssistChip(
+                onClick = onClick,
+                label = { Text(device.getStatusString()) },
+                colors = AssistChipDefaults.assistChipColors(
+                    containerColor = when {
+                        device.isConnected() -> MaterialTheme.colorScheme.primary
+                        device.isAvailable() -> MaterialTheme.colorScheme.secondary
+                        else -> MaterialTheme.colorScheme.outline
+                    }
+                )
+            )
+        }
     }
 }

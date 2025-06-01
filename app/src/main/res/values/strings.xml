@@ -1,3 +1,33 @@
 <resources>
     <string name="app_name">P2PSync</string>
+    
+    <!-- Device connection strings -->
+    <string name="wifi_direct_enabled">WiFi Direct Enabled</string>
+    <string name="wifi_direct_disabled">WiFi Direct Disabled</string>
+    <string name="start_discovery">Start Discovery</string>
+    <string name="stop_discovery">Stop Discovery</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="connect">Connect</string>
+    <string name="connecting">Connecting...</string>
+    <string name="connected">Connected</string>
+    <string name="disconnected">Disconnected</string>
+    <string name="discovery_started">Device discovery started</string>
+    <string name="discovery_stopped">Device discovery stopped</string>
+    <string name="no_devices_found">No devices found</string>
+    <string name="permissions_required">Permissions required for WiFi Direct</string>
+    
+    <!-- File transfer strings -->
+    <string name="select_file">Select File</string>
+    <string name="send_file">Send File</string>
+    <string name="receive_file">Receive File</string>
+    <string name="file_transfer_progress">Transfer Progress</string>
+    <string name="file_sent_successfully">File sent successfully</string>
+    <string name="file_received_successfully">File received successfully</string>
+    <string name="transfer_failed">Transfer failed</string>
+    
+    <!-- Status messages -->
+    <string name="ready_to_sync">Ready to sync</string>
+    <string name="device_name">Device Name: %s</string>
+    <string name="device_address">Address: %s</string>
+    <string name="device_status">Status: %s</string>
 </resources>
