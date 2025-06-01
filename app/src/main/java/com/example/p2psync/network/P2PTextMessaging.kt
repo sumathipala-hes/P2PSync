@@ -384,14 +384,64 @@ class P2PTextMessaging {
             // Extract IP address from connection key (format: "/IP:PORT")
             connectionKey.substringAfter("/").substringBefore(":")
         }.filter { it.isNotEmpty() }
-    }
-
-    /**
+    }    /**
      * Get the first available peer IP address
      */
     fun getFirstPeerAddress(): String? {
         val peerAddresses = getPeerAddresses()
         return peerAddresses.firstOrNull()
+    }
+
+    /**
+     * Send message to all connected clients (broadcast from master/group owner)
+     */
+    suspend fun broadcastTextMessage(
+        message: String,
+        senderName: String,
+        senderAddress: String
+    ): Result<TextMessage> = withContext(Dispatchers.IO) {
+        try {
+            val textMessage = TextMessage(
+                content = message,
+                senderName = senderName,
+                senderAddress = senderAddress,
+                isOutgoing = true
+            )
+
+            if (activeConnections.isEmpty()) {
+                throw Exception("No clients connected for broadcast")
+            }
+
+            var successCount = 0
+            val totalConnections = activeConnections.size
+
+            // Send to all active connections
+            activeConnections.values.forEach { socket ->
+                try {
+                    if (!socket.isClosed && socket.isConnected) {
+                        val success = sendMessageThroughSocket(socket, textMessage)
+                        if (success) {
+                            successCount++
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to send to one client: ${e.message}")
+                }
+            }
+
+            if (successCount > 0) {
+                // Add to local messages list
+                addMessage(textMessage)
+                Log.d(TAG, "Broadcast message sent to $successCount/$totalConnections clients")
+                Result.success(textMessage)
+            } else {
+                throw Exception("Failed to send message to any client")
+            }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Error broadcasting text message: ${e.message}", e)
+            Result.failure(e)
+        }
     }
 
     /**

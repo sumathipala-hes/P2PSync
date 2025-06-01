@@ -161,10 +161,8 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
                 _statusMessage.value = "Failed to send message: ${result.exceptionOrNull()?.message}"
             }
         }
-    }
-
-    /**
-     * Get the correct target IP address for messaging based on device role
+    }    /**
+     * Get the correct target information for messaging based on device role
      */
     fun getTargetAddress(): String? {
         val connInfo = connectionInfo.value
@@ -173,26 +171,85 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
         }
 
         return if (connInfo.isGroupOwner) {
-            // If this device is group owner, target should be client's IP
-            // Get peer address from active connections
-            textMessaging.getFirstPeerAddress()
+            // If this device is group owner, show number of connected clients
+            val clientCount = textMessaging.getPeerAddresses().size
+            if (clientCount > 0) {
+                "Broadcast to $clientCount client(s)"
+            } else {
+                "No clients connected"
+            }
         } else {
-            // If this device is client, target should be group owner's IP
+            // If this device is client, show group owner's IP
             connInfo.groupOwnerAddress?.hostAddress
         }
-    }
-
-    /**
+    }/**
      * Send text message with automatic target resolution
      */
     fun sendTextMessageAuto(message: String) {
-        val targetAddress = getTargetAddress()
-        if (targetAddress == null) {
-            _statusMessage.value = "No target address available for messaging"
+        val currentDevice = thisDevice.value
+        if (currentDevice == null) {
+            _statusMessage.value = "Device information not available"
             return
         }
-        
-        sendTextMessage(message, targetAddress)
+
+        if (message.isBlank()) {
+            _statusMessage.value = "Message cannot be empty"
+            return
+        }
+
+        val connInfo = connectionInfo.value
+        if (connInfo?.groupFormed != true) {
+            _statusMessage.value = "No P2P connection available"
+            return
+        }
+
+        viewModelScope.launch {
+            val result = if (connInfo.isGroupOwner) {
+                // Group owner: broadcast to all connected clients
+                textMessaging.broadcastTextMessage(
+                    message = message,
+                    senderName = currentDevice.deviceName,
+                    senderAddress = currentDevice.deviceAddress
+                )
+            } else {
+                // Client: send to group owner only
+                val targetAddress = connInfo.groupOwnerAddress?.hostAddress
+                if (targetAddress == null) {
+                    _statusMessage.value = "Group owner address not available"
+                    return@launch
+                }
+                
+                textMessaging.sendTextMessage(
+                    message = message,
+                    hostAddress = targetAddress,
+                    senderName = currentDevice.deviceName,
+                    senderAddress = currentDevice.deviceAddress
+                )
+            }
+
+            if (result.isSuccess) {
+                _statusMessage.value = if (connInfo.isGroupOwner) {
+                    "Message broadcast to all clients"
+                } else {
+                    "Message sent to group owner"
+                }
+            } else {
+                _statusMessage.value = "Failed to send message: ${result.exceptionOrNull()?.message}"
+            }        }
+    }
+
+    /**
+     * Get the number of connected clients (for group owner)
+     */
+    fun getConnectedClientCount(): Int {
+        return textMessaging.getPeerAddresses().size
+    }
+
+    /**
+     * Check if this device is the group owner
+     */
+    fun isGroupOwner(): Boolean {
+        return connectionInfo.value?.isGroupOwner == true
     }
 
     fun clearMessages() {
