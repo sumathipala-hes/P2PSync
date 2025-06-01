@@ -1,3 +1,9 @@
 <resources>
     <string name="app_name">P2PSync</string>
+    
+    <string-array name="sync_modes">
+        <item>Two-Way</item>
+        <item>Send Only</item>
+        <item>Receive Only</item>
+    </string-array>
 </resources>

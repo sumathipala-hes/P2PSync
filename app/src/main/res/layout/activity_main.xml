@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:background="#F5F5F5"
+    tools:context=".MainActivity">
+
+    <!-- Header Title -->
+    <TextView
+        android:id="@+id/tvAppTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="P2P Sync"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:gravity="center"
+        android:layout_marginBottom="24dp"
+        android:textColor="#1976D2" />
+
+    <!-- Discover Devices Button -->
+    <Button
+        android:id="@+id/btnDiscoverDevices"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Discover Devices"
+        android:layout_marginBottom="16dp"
+        android:drawableLeft="@android:drawable/ic_menu_search"
+        android:drawablePadding="8dp" />
+
+    <!-- Sync Mode Selection -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Sync Mode"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="8dp"
+        android:textColor="#333333" />
+
+    <Spinner
+        android:id="@+id/spinnerSyncMode"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="16dp"
+        android:entries="@array/sync_modes"
+        android:background="@android:drawable/btn_dropdown" />
+
+    <!-- Select Folders Button -->
+    <Button
+        android:id="@+id/btnSelectFolders"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Select Folders"
+        android:layout_marginBottom="16dp"
+        android:drawableLeft="@android:drawable/ic_menu_manage"
+        android:drawablePadding="8dp" />
+
+    <!-- Selected Folder Display -->
+    <LinearLayout
+        android:id="@+id/cardSelectedFolder"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginBottom="16dp"
+        android:visibility="gone"
+        android:background="#FFFFFF"
+        android:padding="12dp"
+        android:elevation="2dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Selected Folder:"
+            android:textSize="12sp"
+            android:textColor="#666666" />
+
+        <TextView
+            android:id="@+id/tvSelectedFolder"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textSize="14sp"
+            android:textColor="#333333"
+            android:layout_marginTop="4dp" />
+
+    </LinearLayout>
+
+    <!-- Sync Progress Section -->
+    <LinearLayout
+        android:id="@+id/layoutSyncProgress"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginBottom="16dp"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Sync Progress"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="8dp"
+            android:textColor="#333333" />
+
+        <ProgressBar
+            android:id="@+id/progressBarSync"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:progress="0"
+            android:max="100" />
+
+    </LinearLayout>
+
+    <!-- Sync Status -->
+    <TextView
+        android:id="@+id/tvSyncStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Ready to sync"
+        android:textSize="14sp"
+        android:gravity="center"
+        android:layout_marginBottom="16dp"
+        android:textColor="#666666"
+        android:background="#E0E0E0"
+        android:padding="12dp"
+        android:layout_marginTop="8dp" />
+
+    <!-- Start Sync Button -->
+    <Button
+        android:id="@+id/btnStartSync"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Start Sync"
+        android:enabled="false"
+        android:drawableLeft="@android:drawable/ic_media_play"
+        android:drawablePadding="8dp"
+        android:layout_marginTop="16dp" />
+
+</LinearLayout>
