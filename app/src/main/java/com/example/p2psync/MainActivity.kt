@@ -27,6 +27,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.p2psync.data.P2PDevice
 import com.example.p2psync.ui.P2PSyncViewModel
+import com.example.p2psync.ui.components.MessagingScreen
 import com.example.p2psync.ui.theme.P2PSyncTheme
 
 class MainActivity : ComponentActivity() {
@@ -55,10 +56,21 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
     val isWifiP2pEnabled by viewModel.isWifiP2pEnabled.collectAsState()
     val discoveredDevices by viewModel.discoveredDevices.collectAsState()
     val connectionStatus by viewModel.connectionStatus.collectAsState()
+    val connectionInfo by viewModel.connectionInfo.collectAsState()
     val isDiscovering by viewModel.isDiscovering.collectAsState()
     val permissionsGranted by viewModel.permissionsGranted.collectAsState()
     val statusMessage by viewModel.statusMessage.collectAsState()
     val thisDevice by viewModel.thisDevice.collectAsState()
+    
+    // Text messaging state
+    val messages by viewModel.messages.collectAsState()
+    val isListening by viewModel.isListening.collectAsState()
+    val messagingConnectionStatus by viewModel.messagingConnectionStatus.collectAsState()
+    
+    // Navigation state
+    var currentScreen by remember { mutableStateOf("devices") }
+      // Check if connected for messaging
+    val isConnected = connectionInfo?.groupFormed == true
 
     // Permission launcher
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -85,7 +97,7 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
             TopAppBar(
                 title = { 
                     Text(
-                        "P2P Sync",
+                        if (currentScreen == "devices") "P2P Sync" else "Messages",
                         style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -93,38 +105,46 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = MaterialTheme.colorScheme.onPrimary
-                )
+                ),
+                actions = {
+                    IconButton(
+                        onClick = { 
+                            currentScreen = if (currentScreen == "devices") "messaging" else "devices"
+                        }
+                    ) {
+                        Icon(
+                            imageVector = if (currentScreen == "devices") Icons.Default.Message else Icons.Default.Devices,
+                            contentDescription = if (currentScreen == "devices") "Messages" else "Devices",
+                            tint = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
+                }
             )
         }
     ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // Status Card
-            StatusCard(
+        when (currentScreen) {
+            "devices" -> DevicesScreen(
+                paddingValues = paddingValues,
+                viewModel = viewModel,
                 isWifiP2pEnabled = isWifiP2pEnabled,
+                discoveredDevices = discoveredDevices,
                 connectionStatus = connectionStatus,
-                statusMessage = statusMessage,
-                thisDevice = thisDevice
-            )
-
-            // Control Buttons
-            ControlButtons(
                 isDiscovering = isDiscovering,
                 permissionsGranted = permissionsGranted,
-                onStartDiscovery = { viewModel.startDiscovery() },
-                onStopDiscovery = { viewModel.stopDiscovery() },
-                onDisconnect = { viewModel.disconnect() }
-            )
-
-            // Devices List
-            DevicesList(
-                devices = discoveredDevices,
-                onDeviceClick = { device -> viewModel.connectToDevice(device) }
+                statusMessage = statusMessage,
+                thisDevice = thisDevice
+            )            "messaging" -> MessagingScreen(
+                messages = messages,
+                isListening = isListening,
+                connectionStatus = messagingConnectionStatus,
+                isConnected = isConnected,
+                hostAddress = viewModel.getTargetAddress(),
+                onSendMessage = { message ->
+                    viewModel.sendTextMessageAuto(message)
+                },
+                onStartServer = { viewModel.startMessageServer() },
+                onStopServer = { viewModel.stopMessageServer() },
+                onClearMessages = { viewModel.clearMessages() }
             )
         }
     }
@@ -342,5 +362,49 @@ fun DeviceItem(
                 )
             )
         }
+    }
+}
+
+@Composable
+fun DevicesScreen(
+    paddingValues: PaddingValues,
+    viewModel: P2PSyncViewModel,
+    isWifiP2pEnabled: Boolean,
+    discoveredDevices: List<P2PDevice>,
+    connectionStatus: String,
+    isDiscovering: Boolean,
+    permissionsGranted: Boolean,
+    statusMessage: String,
+    thisDevice: P2PDevice?
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(paddingValues)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Status Card
+        StatusCard(
+            isWifiP2pEnabled = isWifiP2pEnabled,
+            connectionStatus = connectionStatus,
+            statusMessage = statusMessage,
+            thisDevice = thisDevice
+        )
+
+        // Control Buttons
+        ControlButtons(
+            isDiscovering = isDiscovering,
+            permissionsGranted = permissionsGranted,
+            onStartDiscovery = { viewModel.startDiscovery() },
+            onStopDiscovery = { viewModel.stopDiscovery() },
+            onDisconnect = { viewModel.disconnect() }
+        )
+
+        // Devices List
+        DevicesList(
+            devices = discoveredDevices,
+            onDeviceClick = { device -> viewModel.connectToDevice(device) }
+        )
     }
 }

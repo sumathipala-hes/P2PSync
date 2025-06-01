@@ -24,10 +24,24 @@
     <string name="file_sent_successfully">File sent successfully</string>
     <string name="file_received_successfully">File received successfully</string>
     <string name="transfer_failed">Transfer failed</string>
-    
-    <!-- Status messages -->
+      <!-- Status messages -->
     <string name="ready_to_sync">Ready to sync</string>
     <string name="device_name">Device Name: %s</string>
     <string name="device_address">Address: %s</string>
     <string name="device_status">Status: %s</string>
+    
+    <!-- Text messaging strings -->
+    <string name="messaging">Messaging</string>
+    <string name="messages">Messages</string>
+    <string name="send_message">Send Message</string>
+    <string name="type_message">Type a message...</string>
+    <string name="message_sent">Message sent</string>
+    <string name="message_failed">Failed to send message</string>
+    <string name="start_server">Start Server</string>
+    <string name="stop_server">Stop Server</string>
+    <string name="server_listening">Server listening for messages</string>
+    <string name="server_stopped">Server stopped</string>
+    <string name="clear_messages">Clear Messages</string>
+    <string name="no_messages">No messages yet</string>
+    <string name="messaging_instructions">Start messaging server and connect devices to begin chatting</string>
 </resources>
