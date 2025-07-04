@@ -18,7 +18,8 @@ data class FileMessage(
     val timestamp: Long = System.currentTimeMillis(),
     val isOutgoing: Boolean = true,
     val transferStatus: TransferStatus = TransferStatus.PENDING,
-    val progress: Int = 0
+    val progress: Int = 0,
+    val displayPath: String = "" 
 ) {
     enum class TransferStatus {
         PENDING,

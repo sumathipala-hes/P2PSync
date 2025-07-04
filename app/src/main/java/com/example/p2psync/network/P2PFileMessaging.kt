@@ -248,13 +248,14 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
                         val receivedFile = receiveFileData(inputStream, fileName, fileSize, fileMessage.id)
                         
                         if (receivedFile != null) {
-                            updateFileMessagePath(fileMessage.id, receivedFile.absolutePath)
+                            val displayPath = getDisplayPath(receivedFile.absolutePath)
+                            updateFileMessagePath(fileMessage.id, receivedFile.absolutePath, displayPath)
                             updateFileMessageStatus(fileMessage.id, FileMessage.TransferStatus.COMPLETED, 100)
                             
                             // Send acknowledgment
                             outputStream.write("ACK\n".toByteArray())
                             outputStream.flush()
-                            Log.d(TAG, "File received successfully: $fileName")
+                            Log.d(TAG, "File received successfully: $fileName at ${displayPath}")
                         } else {
                             updateFileMessageStatus(fileMessage.id, FileMessage.TransferStatus.FAILED, 0)
                             outputStream.write("NACK\n".toByteArray())
@@ -436,13 +437,16 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
     }
 
     /**
-     * Update file message path
+     * Update file message path and display path
      */
-    private fun updateFileMessagePath(messageId: String, filePath: String) {
+    private fun updateFileMessagePath(messageId: String, filePath: String, displayPath: String = "") {
         val currentMessages = _fileMessages.value.toMutableList()
         val index = currentMessages.indexOfFirst { it.id == messageId }
         if (index != -1) {
-            currentMessages[index] = currentMessages[index].copy(filePath = filePath)
+            currentMessages[index] = currentMessages[index].copy(
+                filePath = filePath,
+                displayPath = displayPath.ifEmpty { getDisplayPath(filePath) }
+            )
             _fileMessages.value = currentMessages
         }
     }
@@ -481,17 +485,23 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
         
         // Add context-based directories if context is available
         context?.let { ctx ->
-            // App-specific external files directory (no permissions needed)
+            // Try to use public Downloads directory first
+            val publicDownloads = File("/storage/emulated/0/Download/P2PSync")
+            directories.add(publicDownloads)
+            
+            // App-specific external files directory (fallback)
             ctx.getExternalFilesDir("Downloads")?.let { directories.add(it) }
-            // App cache directory (always available)
+            // App cache directory (last resort)
             directories.add(File(ctx.cacheDir, "received_files"))
         }
         
-        // Fallback directories
+        // Fallback directories if context is not available
         directories.addAll(listOf(
-            // App-specific external directory (no permissions needed on Android 10+)
+            // Public Downloads with app folder
+            File("/storage/emulated/0/Download/P2PSync"),
+            // App-specific external directory
             File("/storage/emulated/0/Android/data/com.example.p2psync/files/Downloads"),
-            // App cache directory (always available)
+            // App cache directory
             File("/data/data/com.example.p2psync/cache/received_files")
         ))
         
@@ -512,5 +522,30 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
         // Final fallback
         Log.w(TAG, "Using fallback cache directory")
         return File("/data/data/com.example.p2psync/cache")
+    }
+
+    
+    private fun getDisplayPath(filePath: String): String {
+        return when {
+            filePath.contains("/storage/emulated/0/Download/P2PSync") -> 
+                "Downloads/P2PSync/"
+            filePath.contains("/storage/emulated/0/Download") -> 
+                "Downloads/"
+            filePath.contains("Android/data/com.example.p2psync/files") -> 
+                "App Files/"
+            filePath.contains("cache") -> 
+                "App Cache/"
+            else -> {
+                // Extract last two directories for display
+                val file = File(filePath)
+                val parent = file.parentFile
+                val grandParent = parent?.parentFile
+                when {
+                    grandParent != null -> "${grandParent.name}/${parent.name}/"
+                    parent != null -> "${parent.name}/"
+                    else -> "Internal Storage/"
+                }
+            }
+        }
     }
 }

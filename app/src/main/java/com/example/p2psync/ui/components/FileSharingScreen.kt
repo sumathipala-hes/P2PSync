@@ -389,21 +389,42 @@ fun FileMessageItem(
             }
 
             Spacer(modifier = Modifier.height(8.dp))
-
+            
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = if (fileMessage.isOutgoing) {
-                        "To: ${fileMessage.senderAddress}"
-                    } else {
-                        "From: ${fileMessage.senderName}"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (!fileMessage.isOutgoing && fileMessage.displayPath.isNotEmpty()) {
+                        Icon(
+                            imageVector = Icons.Default.FolderOpen,
+                            contentDescription = null,
+                            modifier = Modifier.size(12.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Text(
+                        text = if (fileMessage.isOutgoing) {
+                            "To: ${fileMessage.senderAddress}"
+                        } else {
+                            if (fileMessage.displayPath.isNotEmpty()) {
+                                "From: ${fileMessage.senderName} → Saved in: ${fileMessage.displayPath}"
+                            } else {
+                                "From: ${fileMessage.senderName}"
+                            }
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
 
             // Transfer status and progress
             Row(
@@ -497,7 +518,6 @@ fun FileMessageItem(
                         )
                     }
                 }
-            }
             }
         }
     }
