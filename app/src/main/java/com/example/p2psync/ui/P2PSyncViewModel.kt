@@ -2,16 +2,20 @@ package com.example.p2psync.ui
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.p2psync.data.P2PDevice
-import com.example.p2psync.data.TextMessage
+import com.example.p2psync.data.FileMessage
 import com.example.p2psync.network.P2PConnectionManager
 import com.example.p2psync.network.P2PFileTransfer
-import com.example.p2psync.network.P2PTextMessaging
+import com.example.p2psync.network.P2PFileMessaging
+import java.io.File
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,7 +27,7 @@ import kotlinx.coroutines.launch
 class P2PSyncViewModel(application: Application) : AndroidViewModel(application) {    private val context: Context = application.applicationContext
     private val connectionManager = P2PConnectionManager(context)
     private val fileTransfer = P2PFileTransfer()
-    private val textMessaging = P2PTextMessaging()
+    private val fileMessaging = P2PFileMessaging(context)
 
     // Expose state flows from managers
     val isWifiP2pEnabled = connectionManager.isWifiP2pEnabled
@@ -35,10 +39,11 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
     val transferProgress = fileTransfer.transferProgress
     val isTransferring = fileTransfer.isTransferring
     
-    // Text messaging state flows
-    val messages = textMessaging.messages
-    val isListening = textMessaging.isListening
-    val messagingConnectionStatus = textMessaging.connectionStatus
+    // File messaging state flows
+    val fileMessages = fileMessaging.fileMessages
+    val isListening = fileMessaging.isListening
+    val messagingConnectionStatus = fileMessaging.connectionStatus
+    val fileTransferProgress = fileMessaging.transferProgress
 
     private val _permissionsGranted = MutableStateFlow(false)
     val permissionsGranted: StateFlow<Boolean> = _permissionsGranted.asStateFlow()
@@ -52,11 +57,12 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
     }    override fun onCleared() {
         super.onCleared()
         connectionManager.unregisterReceiver()
-        textMessaging.cleanup()
+        fileMessaging.cleanup()
     }
 
     fun checkPermissions() {
-        val requiredPermissions = mutableListOf(
+        // Only check WiFi Direct related permissions for the main app functionality
+        val wifiDirectPermissions = mutableListOf(
             android.Manifest.permission.ACCESS_WIFI_STATE,
             android.Manifest.permission.CHANGE_WIFI_STATE,
             android.Manifest.permission.ACCESS_COARSE_LOCATION,
@@ -64,10 +70,10 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
         )
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            requiredPermissions.add(android.Manifest.permission.NEARBY_WIFI_DEVICES)
+            wifiDirectPermissions.add(android.Manifest.permission.NEARBY_WIFI_DEVICES)
         }
 
-        val allGranted = requiredPermissions.all { permission ->
+        val allGranted = wifiDirectPermissions.all { permission ->
             ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
         }
 
@@ -106,6 +112,7 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
     fun updateStatusMessage(message: String) {
         _statusMessage.value = message
     }    fun getRequiredPermissions(): Array<String> {
+        // Only request WiFi Direct permissions initially
         val permissions = mutableListOf(
             android.Manifest.permission.ACCESS_WIFI_STATE,
             android.Manifest.permission.CHANGE_WIFI_STATE,
@@ -120,49 +127,73 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
         return permissions.toTypedArray()
     }
 
-    // Text messaging functions
-    fun startMessageServer() {
+    fun getFilePermissions(): Array<String> {
+        // Separate method for file permissions
+        val permissions = mutableListOf<String>()
+        
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2) {
+            permissions.add(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+            permissions.add(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        }
+
+        return permissions.toTypedArray()
+    }
+
+    fun checkFilePermissions(): Boolean {
+        // For Android 13+, we use scoped storage which doesn't require these permissions
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            return true
+        }
+
+        val filePermissions = getFilePermissions()
+        return filePermissions.all { permission ->
+            ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    // File messaging functions
+    fun startFileServer() {
         viewModelScope.launch {
-            val result = textMessaging.startMessageServer()
+            val result = fileMessaging.startFileServer()
             if (result.isSuccess) {
-                _statusMessage.value = "Message server started"
+                _statusMessage.value = "File server started"
             } else {
-                _statusMessage.value = "Failed to start message server"
+                _statusMessage.value = "Failed to start file server"
             }
         }
     }
 
-    fun stopMessageServer() {
-        textMessaging.stopMessageServer()
-        _statusMessage.value = "Message server stopped"
-    }    fun sendTextMessage(message: String, hostAddress: String) {
+    fun stopFileServer() {
+        fileMessaging.stopFileServer()
+        _statusMessage.value = "File server stopped"
+    }    fun sendFile(file: File, hostAddress: String) {
         val currentDevice = thisDevice.value
         if (currentDevice == null) {
             _statusMessage.value = "Device information not available"
             return
         }
 
-        if (message.isBlank()) {
-            _statusMessage.value = "Message cannot be empty"
+        if (!file.exists()) {
+            _statusMessage.value = "File does not exist"
             return
         }
 
         viewModelScope.launch {
-            val result = textMessaging.sendTextMessage(
-                message = message,
+            val result = fileMessaging.sendFile(
+                file = file,
                 hostAddress = hostAddress,
                 senderName = currentDevice.deviceName,
                 senderAddress = currentDevice.deviceAddress
             )
 
             if (result.isSuccess) {
-                _statusMessage.value = "Message sent successfully"
+                _statusMessage.value = "File sent successfully"
             } else {
-                _statusMessage.value = "Failed to send message: ${result.exceptionOrNull()?.message}"
+                _statusMessage.value = "Failed to send file: ${result.exceptionOrNull()?.message}"
             }
         }
     }    /**
-     * Get the correct target information for messaging based on device role
+     * Get the correct target information for file sharing based on device role
      */
     fun getTargetAddress(): String? {
         val connInfo = connectionInfo.value
@@ -171,29 +202,24 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
         }
 
         return if (connInfo.isGroupOwner) {
-            // If this device is group owner, show number of connected clients
-            val clientCount = textMessaging.getPeerAddresses().size
-            if (clientCount > 0) {
-                "Broadcast to $clientCount client(s)"
-            } else {
-                "No clients connected"
-            }
+            // If this device is group owner, files can be sent to any connected client
+            "Available for file sharing"
         } else {
             // If this device is client, show group owner's IP
             connInfo.groupOwnerAddress?.hostAddress
         }
     }/**
-     * Send text message with automatic target resolution
+     * Send file with automatic target resolution
      */
-    fun sendTextMessageAuto(message: String) {
+    fun sendFileAuto(file: File) {
         val currentDevice = thisDevice.value
         if (currentDevice == null) {
             _statusMessage.value = "Device information not available"
             return
         }
 
-        if (message.isBlank()) {
-            _statusMessage.value = "Message cannot be empty"
+        if (!file.exists()) {
+            _statusMessage.value = "File does not exist"
             return
         }
 
@@ -205,44 +231,31 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
 
         viewModelScope.launch {
             val result = if (connInfo.isGroupOwner) {
-                // Group owner: broadcast to all connected clients
-                textMessaging.broadcastTextMessage(
-                    message = message,
-                    senderName = currentDevice.deviceName,
-                    senderAddress = currentDevice.deviceAddress
-                )
+                // Group owner: currently just indicates ready to receive files
+                _statusMessage.value = "Ready to receive files from clients"
+                Result.success(Unit)
             } else {
-                // Client: send to group owner only
+                // Client: send to group owner
                 val targetAddress = connInfo.groupOwnerAddress?.hostAddress
                 if (targetAddress == null) {
                     _statusMessage.value = "Group owner address not available"
                     return@launch
                 }
                 
-                textMessaging.sendTextMessage(
-                    message = message,
+                fileMessaging.sendFile(
+                    file = file,
                     hostAddress = targetAddress,
                     senderName = currentDevice.deviceName,
                     senderAddress = currentDevice.deviceAddress
                 )
             }
 
-            if (result.isSuccess) {
-                _statusMessage.value = if (connInfo.isGroupOwner) {
-                    "Message broadcast to all clients"
-                } else {
-                    "Message sent to group owner"
-                }
-            } else {
-                _statusMessage.value = "Failed to send message: ${result.exceptionOrNull()?.message}"
-            }        }
-    }
-
-    /**
-     * Get the number of connected clients (for group owner)
-     */
-    fun getConnectedClientCount(): Int {
-        return textMessaging.getPeerAddresses().size
+            if (result.isSuccess && !connInfo.isGroupOwner) {
+                _statusMessage.value = "File sent to group owner"
+            } else if (result.isFailure) {
+                _statusMessage.value = "Failed to send file: ${result.exceptionOrNull()?.message}"
+            }
+        }
     }
 
     /**
@@ -252,10 +265,67 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
         return connectionInfo.value?.isGroupOwner == true
     }
 
-    fun clearMessages() {
-        textMessaging.clearMessages()
-        _statusMessage.value = "Messages cleared"
+    fun clearFileMessages() {
+        fileMessaging.clearFileMessages()
+        _statusMessage.value = "File messages cleared"
     }
 
-    fun getMessageCount(): Int = textMessaging.getMessageCount()
+    fun getFileMessageCount(): Int = fileMessages.value.size
+
+    /**
+     * Open a received file
+     */
+    fun openFile(fileMessage: FileMessage) {
+        if (!fileMessage.canBeOpened()) {
+            _statusMessage.value = "File is not available to open"
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                val file = File(fileMessage.filePath)
+                if (!file.exists()) {
+                    _statusMessage.value = "File not found: ${fileMessage.fileName}"
+                    return@launch
+                }
+
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    val uri = FileProvider.getUriForFile(
+                        context,
+                        "com.example.p2psync.fileprovider",
+                        file
+                    )
+                    setDataAndType(uri, fileMessage.mimeType)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+
+                try {
+                    context.startActivity(intent)
+                    _statusMessage.value = "Opening ${fileMessage.fileName}"
+                } catch (e: Exception) {
+                    // Fallback: try with generic intent
+                    val genericIntent = Intent(Intent.ACTION_VIEW).apply {
+                        val uri = FileProvider.getUriForFile(
+                            context,
+                            "com.example.p2psync.fileprovider",
+                            file
+                        )
+                        setDataAndType(uri, "*/*")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    
+                    try {
+                        context.startActivity(genericIntent)
+                        _statusMessage.value = "Opening ${fileMessage.fileName}"
+                    } catch (e2: Exception) {
+                        _statusMessage.value = "No app available to open this file type"
+                    }
+                }
+            } catch (e: Exception) {
+                _statusMessage.value = "Error opening file: ${e.message}"
+            }
+        }
+    }
 }

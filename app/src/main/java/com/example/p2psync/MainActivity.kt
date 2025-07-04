@@ -27,7 +27,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.p2psync.data.P2PDevice
 import com.example.p2psync.ui.P2PSyncViewModel
-import com.example.p2psync.ui.components.MessagingScreen
+import com.example.p2psync.ui.components.FileSharingScreen
 import com.example.p2psync.ui.theme.P2PSyncTheme
 
 class MainActivity : ComponentActivity() {
@@ -62,33 +62,56 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
     val statusMessage by viewModel.statusMessage.collectAsState()
     val thisDevice by viewModel.thisDevice.collectAsState()
     
-    // Text messaging state
-    val messages by viewModel.messages.collectAsState()
+    // File sharing state
+    val fileMessages by viewModel.fileMessages.collectAsState()
     val isListening by viewModel.isListening.collectAsState()
     val messagingConnectionStatus by viewModel.messagingConnectionStatus.collectAsState()
+    val fileTransferProgress by viewModel.fileTransferProgress.collectAsState()
     
     // Navigation state
     var currentScreen by remember { mutableStateOf("devices") }
-      // Check if connected for messaging
+    // Check if connected for file sharing
     val isConnected = connectionInfo?.groupFormed == true
 
-    // Permission launcher
+    // Permission launcher for WiFi Direct
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         val allGranted = permissions.values.all { it }
         if (allGranted) {
             viewModel.checkPermissions()
-            Toast.makeText(context, "Permissions granted", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "WiFi Direct permissions granted", Toast.LENGTH_SHORT).show()
         } else {
-            Toast.makeText(context, "Permissions required for WiFi Direct", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "WiFi Direct permissions required", Toast.LENGTH_LONG).show()
         }
     }
 
-    // Request permissions if not granted
+    // Permission launcher for file access (separate)
+    val filePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val allGranted = permissions.values.all { it }
+        if (allGranted) {
+            Toast.makeText(context, "File access permissions granted", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(context, "File access limited on this device", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Request WiFi Direct permissions if not granted
     LaunchedEffect(permissionsGranted) {
         if (!permissionsGranted) {
             permissionLauncher.launch(viewModel.getRequiredPermissions())
+        }
+    }
+
+    // Check and request file permissions when switching to file sharing
+    LaunchedEffect(currentScreen) {
+        if (currentScreen == "filesharing" && !viewModel.checkFilePermissions()) {
+            val filePermissions = viewModel.getFilePermissions()
+            if (filePermissions.isNotEmpty()) {
+                filePermissionLauncher.launch(filePermissions)
+            }
         }
     }
 
@@ -97,7 +120,7 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
             TopAppBar(
                 title = { 
                     Text(
-                        if (currentScreen == "devices") "P2P Sync" else "Messages",
+                        if (currentScreen == "devices") "P2P Sync" else "File Sharing",
                         style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -109,12 +132,12 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                 actions = {
                     IconButton(
                         onClick = { 
-                            currentScreen = if (currentScreen == "devices") "messaging" else "devices"
+                            currentScreen = if (currentScreen == "devices") "filesharing" else "devices"
                         }
                     ) {
                         Icon(
-                            imageVector = if (currentScreen == "devices") Icons.Default.Message else Icons.Default.Devices,
-                            contentDescription = if (currentScreen == "devices") "Messages" else "Devices",
+                            imageVector = if (currentScreen == "devices") Icons.Default.Folder else Icons.Default.Devices,
+                            contentDescription = if (currentScreen == "devices") "File Sharing" else "Devices",
                             tint = MaterialTheme.colorScheme.onPrimary
                         )
                     }
@@ -133,18 +156,22 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                 permissionsGranted = permissionsGranted,
                 statusMessage = statusMessage,
                 thisDevice = thisDevice
-            )            "messaging" -> MessagingScreen(
-                messages = messages,
+            )            "filesharing" -> FileSharingScreen(
+                fileMessages = fileMessages,
                 isListening = isListening,
                 connectionStatus = messagingConnectionStatus,
                 isConnected = isConnected,
                 hostAddress = viewModel.getTargetAddress(),
-                onSendMessage = { message ->
-                    viewModel.sendTextMessageAuto(message)
+                transferProgress = fileTransferProgress,
+                onSendFile = { file ->
+                    viewModel.sendFileAuto(file)
                 },
-                onStartServer = { viewModel.startMessageServer() },
-                onStopServer = { viewModel.stopMessageServer() },
-                onClearMessages = { viewModel.clearMessages() }
+                onStartServer = { viewModel.startFileServer() },
+                onStopServer = { viewModel.stopFileServer() },
+                onClearMessages = { viewModel.clearFileMessages() },
+                onOpenFile = { fileMessage ->
+                    viewModel.openFile(fileMessage)
+                }
             )
         }
     }
@@ -218,7 +245,7 @@ fun StatusCard(
                 }
             }
 
-            Divider()
+            HorizontalDivider()
             
             Text(
                 statusMessage,
