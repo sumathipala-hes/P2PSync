@@ -13,6 +13,17 @@ import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 
 /**
+ * Data class to hold client connection information
+ */
+data class ClientInfo(
+    val ipAddress: String,
+    val port: Int,
+    val connectionTime: Long = System.currentTimeMillis(),
+    val lastActivity: Long = System.currentTimeMillis(),
+    var isActive: Boolean = true
+)
+
+/**
  * Service for sending and receiving files over P2P connection with messaging interface
  */
 class P2PFileMessaging(private val context: android.content.Context? = null) {
@@ -24,6 +35,7 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
         private const val BUFFER_SIZE = 8192
         private const val METADATA_SEPARATOR = ":::"
         private const val KEEP_ALIVE_MESSAGE = "KEEP_ALIVE"
+        private const val CLIENT_HELLO_MESSAGE = "CLIENT_HELLO"
         private const val KEEP_ALIVE_INTERVAL = 30000L
     }
 
@@ -39,10 +51,14 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
     private val _transferProgress = MutableStateFlow<Map<String, Int>>(emptyMap())
     val transferProgress: StateFlow<Map<String, Int>> = _transferProgress.asStateFlow()
 
+    private val _connectedClientsInfo = MutableStateFlow<List<String>>(emptyList())
+    val connectedClientsInfo: StateFlow<List<String>> = _connectedClientsInfo.asStateFlow()
+
     private var messageServerSocket: ServerSocket? = null
     private var isServerRunning = false
     private var serverJob: Job? = null
     
+    private val connectedClients = ConcurrentHashMap<String, ClientInfo>() // clientAddress -> ClientInfo
     private val activeConnections = ConcurrentHashMap<String, Socket>()
     private val connectionJobs = ConcurrentHashMap<String, Job>()
     private val coroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -74,6 +90,7 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
                                 Log.d(TAG, "New file client connected: $clientAddress")
                                 
                                 activeConnections[clientAddress] = socket
+                                addConnectedClient(clientAddress)
                                 
                                 val connectionJob = launch {
                                     handleFileConnection(socket, clientAddress)
@@ -144,6 +161,9 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
         senderAddress: String
     ): Result<FileMessage> = withContext(Dispatchers.IO) {
         try {
+            Log.d(TAG, "Attempting to send file: ${file.name} to $hostAddress")
+            Log.d(TAG, "File exists: ${file.exists()}, File size: ${file.length()}")
+            
             val fileMessage = FileMessage(
                 fileName = file.name,
                 filePath = file.absolutePath,
@@ -181,6 +201,9 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
      */
     private suspend fun handleFileConnection(socket: Socket, clientAddress: String) = withContext(Dispatchers.IO) {
         try {
+            // Add client to connected clients list
+            addConnectedClient(clientAddress)
+            
             val inputStream = socket.getInputStream()
             val outputStream = socket.getOutputStream()
             
@@ -218,6 +241,21 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
                     Log.d(TAG, "Received metadata: $metadataString")
                     
                     if (metadataString == KEEP_ALIVE_MESSAGE) {
+                        continue
+                    }
+
+                    if (metadataString == CLIENT_HELLO_MESSAGE) {
+                        Log.d(TAG, "Received CLIENT_HELLO from $clientAddress")
+                        // Client is announcing its presence - no need to do anything special
+                        // The client is already added to connectedClients when socket was accepted
+                        // Send acknowledgment back
+                        try {
+                            outputStream.write("HELLO_ACK\n".toByteArray())
+                            outputStream.flush()
+                            Log.d(TAG, "Sent HELLO_ACK to $clientAddress")
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to send HELLO_ACK: ${e.message}")
+                        }
                         continue
                     }
 
@@ -278,6 +316,9 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
             }
             activeConnections.remove(clientAddress)
             connectionJobs.remove(clientAddress)
+            
+            // Don't remove client immediately - keep them for potential reconnection
+            Log.d(TAG, "Client socket closed but keeping in connected list: $clientAddress")
         }
     }
 
@@ -286,8 +327,11 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
      */
     private suspend fun sendFileToHost(hostAddress: String, file: File, fileMessage: FileMessage): Boolean = withContext(Dispatchers.IO) {
         try {
+            Log.d(TAG, "Connecting to $hostAddress:$FILE_PORT")
+            
             Socket().use { socket ->
                 socket.connect(InetSocketAddress(hostAddress, FILE_PORT), CONNECTION_TIMEOUT)
+                Log.d(TAG, "Connected successfully to $hostAddress:$FILE_PORT")
                 
                 val outputStream = socket.getOutputStream()
                 val inputStream = socket.getInputStream()
@@ -335,7 +379,7 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
                 return@withContext ack == "ACK"
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error sending file to host: ${e.message}")
+            Log.e(TAG, "Error sending file to host: ${e.message}", e)
             false
         }
     }
@@ -546,6 +590,242 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
                     else -> "Internal Storage/"
                 }
             }
+        }
+    }
+
+    /**
+     * Add connected client with IP extraction
+     */
+    private fun addConnectedClient(clientAddress: String) {
+        try {
+            Log.d(TAG, "=== Adding Connected Client ===")
+            Log.d(TAG, "Raw client address: $clientAddress")
+            
+            // Extract IP from socket address format: /192.168.1.100:12345
+            val ipAddress = clientAddress.substringAfter("/").substringBefore(":")
+            val port = clientAddress.substringAfterLast(":").toIntOrNull() ?: 0
+            
+            Log.d(TAG, "Extracted IP: $ipAddress")
+            Log.d(TAG, "Extracted Port: $port")
+            
+            val clientInfo = ClientInfo(
+                ipAddress = ipAddress,
+                port = port,
+                connectionTime = System.currentTimeMillis(),
+                lastActivity = System.currentTimeMillis(),
+                isActive = true
+            )
+            
+            connectedClients[clientAddress] = clientInfo
+            Log.d(TAG, "Total connected clients: ${connectedClients.size}")
+            Log.d(TAG, "Connected clients map: $connectedClients")
+            
+            updateConnectedClientsStateFlow()
+            Log.d(TAG, "Added client: $clientAddress with IP: $ipAddress")
+            Log.d(TAG, "=== End Adding Client ===")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse client address: $clientAddress", e)
+        }
+    }
+
+    /**
+     * Remove connected client
+     */
+    private fun removeConnectedClient(clientAddress: String) {
+        connectedClients.remove(clientAddress)
+        updateConnectedClientsStateFlow()
+        Log.d(TAG, "Removed client: $clientAddress")
+    }
+
+    /**
+     * Update the connected clients StateFlow
+     */
+    private fun updateConnectedClientsStateFlow() {
+        try {
+            Log.d(TAG, "=== Updating Connected Clients StateFlow ===")
+            Log.d(TAG, "Total clients in map: ${connectedClients.size}")
+            
+            val activeClients = connectedClients.values.filter { it.isActive }
+            Log.d(TAG, "Active clients: ${activeClients.size}")
+            
+            val clientIPs = activeClients.map { it.ipAddress }.distinct()
+            Log.d(TAG, "Client IPs: $clientIPs")
+            
+            _connectedClientsInfo.value = clientIPs
+            Log.d(TAG, "StateFlow updated with: ${_connectedClientsInfo.value}")
+            Log.d(TAG, "=== End StateFlow Update ===")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating connected clients StateFlow", e)
+        }
+    }
+
+    /**
+     * Get list of all active client IP addresses (for group owner broadcasting)
+     */
+    fun getAllActiveClientIPs(): List<String> {
+        return connectedClients.values
+            .filter { it.isActive }
+            .map { it.ipAddress }
+            .distinct()
+            .also { ips ->
+                Log.d(TAG, "Active client IPs: $ips")
+            }
+    }
+
+    /**
+     * Get list of connected clients (for compatibility)
+     */
+    fun getConnectedClients(): List<String> {
+        return connectedClients.keys.toList()
+    }
+
+    /**
+     * Send file to all connected clients (group owner broadcast)
+     */
+    suspend fun sendFileToAllClients(
+        file: File,
+        senderName: String,
+        senderAddress: String
+    ): Result<List<FileMessage>> = withContext(Dispatchers.IO) {
+        try {
+            val activeClientIPs = getAllActiveClientIPs()
+            
+            if (activeClientIPs.isEmpty()) {
+                Log.w(TAG, "No active clients to send file to")
+                return@withContext Result.failure(Exception("No clients connected"))
+            }
+
+            Log.d(TAG, "Broadcasting file ${file.name} to ${activeClientIPs.size} clients: $activeClientIPs")
+
+            val results = mutableListOf<FileMessage>()
+            val errors = mutableListOf<Exception>()
+
+            // Send to each client sequentially to avoid overwhelming the connection
+            for (clientIP in activeClientIPs) {
+                try {
+                    val result = sendFile(
+                        file = file,
+                        hostAddress = clientIP,
+                        senderName = senderName,
+                        senderAddress = senderAddress
+                    )
+                    
+                    if (result.isSuccess) {
+                        result.getOrNull()?.let { results.add(it) }
+                        Log.d(TAG, "Successfully sent file to client: $clientIP")
+                    } else {
+                        val throwable = result.exceptionOrNull()
+                        val error = if (throwable is Exception) throwable else Exception("Unknown error sending to $clientIP: ${throwable?.message}")
+                        errors.add(error)
+                        Log.e(TAG, "Failed to send file to client $clientIP: ${error.message}")
+                    }
+                } catch (e: Exception) {
+                    errors.add(e)
+                    Log.e(TAG, "Exception sending file to client $clientIP: ${e.message}")
+                }
+            }
+
+            // Return success if we sent to at least one client
+            if (results.isNotEmpty()) {
+                Log.d(TAG, "Successfully sent file to ${results.size}/${activeClientIPs.size} clients")
+                Result.success(results)
+            } else {
+                val combinedError = Exception("Failed to send file to any clients. Errors: ${errors.map { it.message }}")
+                Log.e(TAG, "Failed to send file to all clients: ${combinedError.message}")
+                Result.failure(combinedError)
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in sendFileToAllClients: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Detect potential clients in the WiFi Direct network
+     * This helps identify clients even before they connect to the file server
+     */
+    suspend fun detectPotentialClients(groupOwnerIP: String) = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "Attempting client detection from group owner IP: $groupOwnerIP")
+            
+            // For now, we'll rely on actual connections since clients don't run servers
+            // This method can be extended later with ping-based detection or other methods
+            
+            val currentClients = connectedClients.size
+            Log.d(TAG, "Current connected clients: $currentClients")
+            
+            // Notify that we're actively looking for clients
+            _connectionStatus.value = "Looking for connected clients..."
+            
+            // Reset status after a moment
+            kotlinx.coroutines.delay(2000)
+            _connectionStatus.value = if (currentClients > 0) {
+                "File server running - $currentClients client(s) connected"
+            } else {
+                "File server running - waiting for clients"
+            }
+            
+        } catch (e: Exception) {
+            Log.w(TAG, "Error detecting potential clients: ${e.message}")
+        }
+    }
+
+    /**
+     * Clear all connected clients (useful for testing/debugging)
+     */
+    fun clearConnectedClients() {
+        connectedClients.clear()
+        updateConnectedClientsStateFlow()
+        Log.d(TAG, "Cleared all connected clients")
+    }
+
+    /**
+     * Send a client hello signal to announce presence to group owner
+     * This allows clients to appear in the group owner's list without sending a file
+     */
+    suspend fun sendClientHello(groupOwnerAddress: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "Sending CLIENT_HELLO to group owner: $groupOwnerAddress")
+            
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress(groupOwnerAddress, FILE_PORT), CONNECTION_TIMEOUT)
+                Log.d(TAG, "Connected to group owner for CLIENT_HELLO")
+                
+                val outputStream = socket.getOutputStream()
+                val inputStream = socket.getInputStream()
+                
+                // Send CLIENT_HELLO message
+                val helloMessage = CLIENT_HELLO_MESSAGE
+                val messageBytes = helloMessage.toByteArray(Charsets.UTF_8)
+                
+                // Send message length first (4 bytes)
+                val lengthBuffer = java.nio.ByteBuffer.allocate(4).putInt(messageBytes.size).array()
+                outputStream.write(lengthBuffer)
+                
+                // Send hello message
+                outputStream.write(messageBytes)
+                outputStream.flush()
+                
+                Log.d(TAG, "CLIENT_HELLO sent, waiting for acknowledgment...")
+                
+                // Wait for acknowledgment
+                val reader = BufferedReader(InputStreamReader(inputStream))
+                val ack = reader.readLine()
+                
+                Log.d(TAG, "Received acknowledgment: $ack")
+                
+                if (ack == "HELLO_ACK") {
+                    Log.d(TAG, "CLIENT_HELLO successfully acknowledged")
+                    Result.success(Unit)
+                } else {
+                    Log.w(TAG, "Unexpected acknowledgment: $ack")
+                    Result.success(Unit) // Still consider it success
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error sending CLIENT_HELLO: ${e.message}", e)
+            Result.failure(e)
         }
     }
 }

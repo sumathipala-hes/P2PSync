@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
@@ -20,11 +21,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 /**
  * ViewModel for managing P2P sync operations
  */
-class P2PSyncViewModel(application: Application) : AndroidViewModel(application) {    private val context: Context = application.applicationContext
+class P2PSyncViewModel(application: Application) : AndroidViewModel(application) {
+    private val context: Context = application.applicationContext
     private val connectionManager = P2PConnectionManager(context)
     private val fileTransfer = P2PFileTransfer()
     private val fileMessaging = P2PFileMessaging(context)
@@ -44,6 +47,14 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
     val isListening = fileMessaging.isListening
     val messagingConnectionStatus = fileMessaging.connectionStatus
     val fileTransferProgress = fileMessaging.transferProgress
+    val connectedClientsInfo = fileMessaging.connectedClientsInfo
+
+    // Transfer mode state for bidirectional file sharing
+    private val _transferMode = MutableStateFlow("none") // "send", "receive", "none"
+    val transferMode: StateFlow<String> = _transferMode.asStateFlow()
+
+    private val _peerTransferMode = MutableStateFlow("none") // Track peer's mode
+    val peerTransferMode: StateFlow<String> = _peerTransferMode.asStateFlow()
 
     private val _permissionsGranted = MutableStateFlow(false)
     val permissionsGranted: StateFlow<Boolean> = _permissionsGranted.asStateFlow()
@@ -54,6 +65,33 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
     init {
         checkPermissions()
         connectionManager.registerReceiver()
+        
+        // Observe connection changes to detect clients or send hello
+        viewModelScope.launch {
+            connectionInfo.collect { connInfo ->
+                if (connInfo?.groupFormed == true) {
+                    if (connInfo.isGroupOwner) {
+                        Log.d("P2PSyncViewModel", "Group formed as owner, detecting potential clients...")
+                        delay(2000) // Wait a bit for clients to settle
+                        detectPotentialClients()
+                    } else {
+                        Log.d("P2PSyncViewModel", "Connected as client, sending CLIENT_HELLO...")
+                        delay(1000) // Wait a bit for connection to stabilize
+                        sendClientHello()
+                    }
+                }
+            }
+        }
+        
+        // Debug: Log when connected clients change
+        viewModelScope.launch {
+            connectedClientsInfo.collect { clients ->
+                Log.d("P2PSyncViewModel", "=== Connected Clients Changed ===")
+                Log.d("P2PSyncViewModel", "New client list: $clients")
+                Log.d("P2PSyncViewModel", "Client count: ${clients.size}")
+                Log.d("P2PSyncViewModel", "=== End Client Change ===")
+            }
+        }
     }    override fun onCleared() {
         super.onCleared()
         connectionManager.unregisterReceiver()
@@ -107,6 +145,31 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
     fun disconnect() {
         connectionManager.disconnect()
         _statusMessage.value = "Disconnected"
+    }
+
+    // Transfer mode management functions
+    fun setTransferMode(mode: String) {
+        _transferMode.value = mode
+        // Notify peer about our mode change via file messaging
+        notifyPeerModeChange(mode)
+        _statusMessage.value = when (mode) {
+            "send" -> "Ready to send files"
+            "receive" -> "Ready to receive files"
+            else -> "Transfer mode cleared"
+        }
+    }
+
+    fun setSendMode() {
+        setTransferMode("send")
+    }
+
+    fun setReceiveMode() {
+        setTransferMode("receive")
+    }
+
+    private fun notifyPeerModeChange(mode: String) {
+        // This could be implemented to send mode change notifications
+        // For now, we'll handle mode coordination through UI coordination
     }
 
     fun updateStatusMessage(message: String) {
@@ -166,7 +229,13 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
     fun stopFileServer() {
         fileMessaging.stopFileServer()
         _statusMessage.value = "File server stopped"
-    }    fun sendFile(file: File, hostAddress: String) {
+    }
+    
+    /**
+     * Send file to a specific host address (manual targeting)
+     * Note: For automatic bidirectional sending, use sendFileAuto() instead
+     */
+    fun sendFile(file: File, hostAddress: String) {
         val currentDevice = thisDevice.value
         if (currentDevice == null) {
             _statusMessage.value = "Device information not available"
@@ -208,53 +277,90 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
             // If this device is client, show group owner's IP
             connInfo.groupOwnerAddress?.hostAddress
         }
-    }/**
-     * Send file with automatic target resolution
+    }    /**
+     * Send file with bidirectional support
      */
     fun sendFileAuto(file: File) {
+        Log.d("P2PSyncViewModel", "sendFileAuto called with file: ${file.name}")
+        
         val currentDevice = thisDevice.value
         if (currentDevice == null) {
+            Log.w("P2PSyncViewModel", "Device information not available")
             _statusMessage.value = "Device information not available"
             return
         }
 
         if (!file.exists()) {
+            Log.w("P2PSyncViewModel", "File does not exist: ${file.absolutePath}")
             _statusMessage.value = "File does not exist"
             return
         }
 
         val connInfo = connectionInfo.value
         if (connInfo?.groupFormed != true) {
+            Log.w("P2PSyncViewModel", "No P2P connection available")
             _statusMessage.value = "No P2P connection available"
             return
         }
 
+        // Check if we're in send mode
+        if (_transferMode.value != "send") {
+            Log.w("P2PSyncViewModel", "Not in send mode, current mode: ${_transferMode.value}")
+            _statusMessage.value = "Please select 'Send Mode' first"
+            return
+        }
+
+        Log.d("P2PSyncViewModel", "Connection info - isGroupOwner: ${connInfo.isGroupOwner}")
+
         viewModelScope.launch {
-            val result = if (connInfo.isGroupOwner) {
-                // Group owner: currently just indicates ready to receive files
-                _statusMessage.value = "Ready to receive files from clients"
-                Result.success(Unit)
-            } else {
-                // Client: send to group owner
-                val targetAddress = connInfo.groupOwnerAddress?.hostAddress
-                if (targetAddress == null) {
-                    _statusMessage.value = "Group owner address not available"
-                    return@launch
-                }
-                
-                fileMessaging.sendFile(
+            if (connInfo.isGroupOwner) {
+                Log.d("P2PSyncViewModel", "Device is group owner, broadcasting file to all clients")
+                // Group owner broadcasts to all connected clients
+                val result = fileMessaging.sendFileToAllClients(
                     file = file,
-                    hostAddress = targetAddress,
                     senderName = currentDevice.deviceName,
                     senderAddress = currentDevice.deviceAddress
                 )
-            }
 
-            if (result.isSuccess && !connInfo.isGroupOwner) {
-                _statusMessage.value = "File sent to group owner"
-            } else if (result.isFailure) {
-                _statusMessage.value = "Failed to send file: ${result.exceptionOrNull()?.message}"
+                if (result.isSuccess) {
+                    val sentMessages = result.getOrNull() ?: emptyList()
+                    Log.d("P2PSyncViewModel", "File broadcast successfully to ${sentMessages.size} clients")
+                    _statusMessage.value = "File sent to ${sentMessages.size} client(s)"
+                } else {
+                    Log.e("P2PSyncViewModel", "Failed to broadcast file: ${result.exceptionOrNull()?.message}")
+                    _statusMessage.value = "Failed to send file: ${result.exceptionOrNull()?.message}"
+                }
+            } else {
+                Log.d("P2PSyncViewModel", "Device is client, sending to group owner only")
+                // Client sends only to group owner
+                val groupOwnerAddress = connInfo.groupOwnerAddress?.hostAddress
+                
+                if (groupOwnerAddress == null) {
+                    Log.w("P2PSyncViewModel", "Group owner address not available")
+                    _statusMessage.value = "Group owner address not available"
+                    return@launch
+                }
+
+                Log.d("P2PSyncViewModel", "Sending file to group owner: $groupOwnerAddress")
+
+                val result = fileMessaging.sendFile(
+                    file = file,
+                    hostAddress = groupOwnerAddress,
+                    senderName = currentDevice.deviceName,
+                    senderAddress = currentDevice.deviceAddress
+                )
+
+                if (result.isSuccess) {
+                    Log.d("P2PSyncViewModel", "File sent successfully to group owner")
+                    _statusMessage.value = "File sent successfully to group owner"
+                } else {
+                    Log.e("P2PSyncViewModel", "Failed to send file to group owner: ${result.exceptionOrNull()?.message}")
+                    _statusMessage.value = "Failed to send file: ${result.exceptionOrNull()?.message}"
+                }
             }
+            
+            // Reset to neutral mode after send attempt
+            _transferMode.value = "none"
         }
     }
 
@@ -325,6 +431,212 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
                 }
             } catch (e: Exception) {
                 _statusMessage.value = "Error opening file: ${e.message}"
+            }
+        }
+    }
+
+    /**
+     * Get count of connected clients
+     */
+    fun getConnectedClientCount(): Int {
+        return fileMessaging.getConnectedClients().size
+    }
+
+    /**
+     * Get list of connected client IPs (for group owner)
+     */
+    fun getConnectedClientIPs(): List<String> {
+        return fileMessaging.getAllActiveClientIPs()
+    }
+
+    /**
+     * Get detailed client information for UI display
+     */
+    fun getConnectedClientsInfo(): List<String> {
+        val connectedClients = fileMessaging.getConnectedClients()
+        return connectedClients.map { clientAddress ->
+            // Parse IP from socket address format: /192.168.1.100:12345
+            val ip = clientAddress.substringAfter("/").substringBefore(":")
+            ip
+        }.distinct()
+    }
+
+    /**
+     * Check if device can send files (has target available)
+     */
+    fun canSendFiles(): Boolean {
+        val connInfo = connectionInfo.value
+        if (connInfo?.groupFormed != true) return false
+        
+        return if (connInfo.isGroupOwner) {
+            // Group owner can send if there are connected clients
+            getConnectedClientCount() > 0
+        } else {
+            // Client can always send to group owner
+            true
+        }
+    }
+
+    /**
+     * Check if device can receive files
+     */
+    fun canReceiveFiles(): Boolean {
+        val connInfo = connectionInfo.value
+        return connInfo?.groupFormed == true && isListening.value
+    }
+
+    /**
+     * Send file to all connected clients (group owner only)
+     */
+    fun sendFileToAllClients(file: File) {
+        Log.d("P2PSyncViewModel", "sendFileToAllClients called with file: ${file.name}")
+        
+        val currentDevice = thisDevice.value
+        if (currentDevice == null) {
+            Log.w("P2PSyncViewModel", "Device information not available")
+            _statusMessage.value = "Device information not available"
+            return
+        }
+
+        if (!file.exists()) {
+            Log.w("P2PSyncViewModel", "File does not exist: ${file.absolutePath}")
+            _statusMessage.value = "File does not exist"
+            return
+        }
+
+        val connInfo = connectionInfo.value
+        if (connInfo?.groupFormed != true) {
+            Log.w("P2PSyncViewModel", "No P2P connection available")
+            _statusMessage.value = "No P2P connection available"
+            return
+        }
+
+        if (!connInfo.isGroupOwner) {
+            Log.w("P2PSyncViewModel", "Only group owner can send to all clients")
+            _statusMessage.value = "Only group owner can send to all clients"
+            return
+        }
+
+        Log.d("P2PSyncViewModel", "Group owner sending file to all clients")
+
+        viewModelScope.launch {
+            val result = fileMessaging.sendFileToAllClients(
+                file = file,
+                senderName = currentDevice.deviceName,
+                senderAddress = currentDevice.deviceAddress
+            )
+
+            if (result.isSuccess) {
+                val sentMessages = result.getOrNull() ?: emptyList()
+                Log.d("P2PSyncViewModel", "File broadcast successfully to ${sentMessages.size} clients")
+                _statusMessage.value = "File sent to ${sentMessages.size} client(s)"
+            } else {
+                Log.e("P2PSyncViewModel", "Failed to broadcast file: ${result.exceptionOrNull()?.message}")
+                _statusMessage.value = "Failed to send file: ${result.exceptionOrNull()?.message}"
+            }
+        }
+    }
+
+    /**
+     * Manually detect and add potential clients based on WiFi Direct connection
+     * This helps show clients even before they connect to the file server
+     */
+    fun detectPotentialClients() {
+        viewModelScope.launch {
+            val connInfo = connectionInfo.value
+            if (connInfo?.isGroupOwner == true && connInfo.groupFormed) {
+                Log.d("P2PSyncViewModel", "Attempting to detect potential clients...")
+                
+                // In WiFi Direct, the group owner is typically 192.168.49.1
+                // and clients are typically 192.168.49.x where x > 1
+                val groupOwnerIP = connInfo.groupOwnerAddress?.hostAddress
+                Log.d("P2PSyncViewModel", "Group owner IP: $groupOwnerIP")
+                
+                if (groupOwnerIP != null && groupOwnerIP.startsWith("192.168.49.")) {
+                    // Scan for potential clients in the WiFi Direct network
+                    fileMessaging.detectPotentialClients(groupOwnerIP)
+                }
+            }
+        }
+    }
+
+    /**
+     * Manually refresh the connected clients list
+     * This can help detect clients that may not have appeared automatically
+     */
+    fun refreshConnectedClients() {
+        viewModelScope.launch {
+            val connInfo = connectionInfo.value
+            if (connInfo?.isGroupOwner == true && connInfo.groupFormed) {
+                Log.d("P2PSyncViewModel", "Manually refreshing connected clients...")
+                _statusMessage.value = "Refreshing client connections..."
+                
+                // Log current state
+                val currentClients = fileMessaging.getConnectedClients()
+                Log.d("P2PSyncViewModel", "Current tracked clients: $currentClients")
+                
+                // Trigger detection
+                detectPotentialClients()
+                
+                // Update status message
+                kotlinx.coroutines.delay(1000)
+                val clientCount = fileMessaging.getAllActiveClientIPs().size
+                _statusMessage.value = if (clientCount > 0) {
+                    "Found $clientCount connected client(s)"
+                } else {
+                    "No clients detected - they will appear when sending files"
+                }
+            } else {
+                _statusMessage.value = "Not group owner or no WiFi Direct connection"
+            }
+        }
+    }
+
+    /**
+     * Debug method to check current client state
+     */
+    fun debugClientState(): String {
+        val connInfo = connectionInfo.value
+        val isGroupOwner = connInfo?.isGroupOwner == true
+        val isGroupFormed = connInfo?.groupFormed == true
+        val connectedFromFlow = connectedClientsInfo.value
+        val connectedFromMethod = getConnectedClientsInfo()
+        val rawClients = fileMessaging.getConnectedClients()
+        
+        return buildString {
+            appendLine("=== DEBUG CLIENT STATE ===")
+            appendLine("Is Group Owner: $isGroupOwner")
+            appendLine("Group Formed: $isGroupFormed")
+            appendLine("Clients from StateFlow: $connectedFromFlow")
+            appendLine("Clients from Method: $connectedFromMethod")
+            appendLine("Raw Connected Clients: $rawClients")
+            appendLine("=== END DEBUG ===")
+        }
+    }
+
+    /**
+     * Send client hello signal to announce presence to group owner
+     * This makes the client appear in the group owner's list immediately
+     */
+    fun sendClientHello() {
+        viewModelScope.launch {
+            val connInfo = connectionInfo.value
+            if (connInfo?.groupFormed == true && !connInfo.isGroupOwner) {
+                val groupOwnerAddress = connInfo.groupOwnerAddress?.hostAddress
+                if (groupOwnerAddress != null) {
+                    Log.d("P2PSyncViewModel", "Sending CLIENT_HELLO to group owner: $groupOwnerAddress")
+                    
+                    val result = fileMessaging.sendClientHello(groupOwnerAddress)
+                    if (result.isSuccess) {
+                        Log.d("P2PSyncViewModel", "CLIENT_HELLO sent successfully")
+                        _statusMessage.value = "Connected to group owner"
+                    } else {
+                        Log.w("P2PSyncViewModel", "Failed to send CLIENT_HELLO: ${result.exceptionOrNull()?.message}")
+                        _statusMessage.value = "Connection established (hello failed)"
+                    }
+                } else {
+                    Log.w("P2PSyncViewModel", "Group owner address not available for CLIENT_HELLO")
+                }
             }
         }
     }

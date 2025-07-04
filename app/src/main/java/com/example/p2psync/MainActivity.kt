@@ -67,6 +67,8 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
     val isListening by viewModel.isListening.collectAsState()
     val messagingConnectionStatus by viewModel.messagingConnectionStatus.collectAsState()
     val fileTransferProgress by viewModel.fileTransferProgress.collectAsState()
+    val transferMode by viewModel.transferMode.collectAsState()
+    val connectedClients by viewModel.connectedClientsInfo.collectAsState()
     
     // Navigation state
     var currentScreen by remember { mutableStateOf("devices") }
@@ -171,6 +173,25 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                 onClearMessages = { viewModel.clearFileMessages() },
                 onOpenFile = { fileMessage ->
                     viewModel.openFile(fileMessage)
+                },
+                onSetSendMode = { viewModel.setSendMode() },
+                onSetReceiveMode = { viewModel.setReceiveMode() },
+                currentMode = transferMode,
+                isGroupOwner = connectionInfo?.isGroupOwner == true,
+                connectedClients = if (connectionInfo?.isGroupOwner == true) {
+                    connectedClients
+                } else {
+                    emptyList()
+                },
+                onSendToAllClients = { file ->
+                    viewModel.sendFileToAllClients(file)
+                },
+                onDebugClients = {
+                    val debugInfo = viewModel.debugClientState()
+                    android.util.Log.d("MainActivity", debugInfo)
+                },
+                onAnnouncePresence = {
+                    viewModel.sendClientHello()
                 }
             )
         }
