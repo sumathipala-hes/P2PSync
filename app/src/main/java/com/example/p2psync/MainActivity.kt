@@ -13,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -155,36 +156,18 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = MaterialTheme.colorScheme.onPrimary
                 ),
-                actions = {
-                    // Navigation buttons
-                    IconButton(
-                        onClick = { 
-                            currentScreen = when (currentScreen) {
-                                "devices" -> "filesharing"
-                                "filesharing" -> "foldersharing"
-                                "foldersharing" -> "sync"
-                                "sync" -> "devices"
-                                else -> "devices"
-                            }
+                navigationIcon = {
+                    // Back button for non-main screens
+                    if (currentScreen != "devices") {
+                        IconButton(
+                            onClick = { currentScreen = "devices" }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ArrowBack,
+                                contentDescription = "Back to Main",
+                                tint = MaterialTheme.colorScheme.onPrimary
+                            )
                         }
-                    ) {
-                        Icon(
-                            imageVector = when (currentScreen) {
-                                "devices" -> Icons.Default.Folder
-                                "filesharing" -> Icons.Default.FolderOpen
-                                "foldersharing" -> Icons.Default.Sync
-                                "sync" -> Icons.Default.Devices
-                                else -> Icons.Default.Devices
-                            },
-                            contentDescription = when (currentScreen) {
-                                "devices" -> "File Sharing"
-                                "filesharing" -> "Folder Sharing"
-                                "foldersharing" -> "One-Way Sync"
-                                "sync" -> "Devices"
-                                else -> "Switch View"
-                            },
-                            tint = MaterialTheme.colorScheme.onPrimary
-                        )
                     }
                 }
             )
@@ -200,7 +183,8 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                 isDiscovering = isDiscovering,
                 permissionsGranted = permissionsGranted,
                 statusMessage = statusMessage,
-                thisDevice = thisDevice
+                thisDevice = thisDevice,
+                onNavigateToFeature = { screen -> currentScreen = screen }
             )
             "filesharing" -> FileSharingScreen(
                 fileMessages = fileMessages,
@@ -523,6 +507,122 @@ fun DeviceItem(
 }
 
 @Composable
+fun FeatureNavigationCards(
+    onNavigateToFeature: (String) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                "Select Feature",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // File Sharing Card
+                Card(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onNavigateToFeature("filesharing") },
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.InsertDriveFile,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(32.dp)
+                        )
+                        Text(
+                            "File Sharing",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                // Folder Sharing Card
+                Card(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onNavigateToFeature("foldersharing") },
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Folder,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.size(32.dp)
+                        )
+                        Text(
+                            "Folder Sharing",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                // One-Way Sync Card
+                Card(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onNavigateToFeature("sync") },
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Sync,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                            modifier = Modifier.size(32.dp)
+                        )
+                        Text(
+                            "One-Way Sync",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun DevicesScreen(
     paddingValues: PaddingValues,
     viewModel: P2PSyncViewModel,
@@ -532,7 +632,8 @@ fun DevicesScreen(
     isDiscovering: Boolean,
     permissionsGranted: Boolean,
     statusMessage: String,
-    thisDevice: P2PDevice?
+    thisDevice: P2PDevice?,
+    onNavigateToFeature: (String) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -556,6 +657,11 @@ fun DevicesScreen(
             onStartDiscovery = { viewModel.startDiscovery() },
             onStopDiscovery = { viewModel.stopDiscovery() },
             onDisconnect = { viewModel.disconnect() }
+        )
+
+        // Feature Navigation Cards
+        FeatureNavigationCards(
+            onNavigateToFeature = onNavigateToFeature
         )
 
         // Devices List
