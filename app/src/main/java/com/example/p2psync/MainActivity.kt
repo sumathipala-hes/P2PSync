@@ -91,6 +91,7 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
     
     // Navigation state
     var currentScreen by remember { mutableStateOf("devices") }
+    var previousScreen by remember { mutableStateOf("devices") }
     // Check if connected for file sharing
     val isConnected = connectionInfo?.groupFormed == true
 
@@ -128,12 +129,25 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
 
     // Check and request file permissions when switching to file sharing or folder sharing
     LaunchedEffect(currentScreen) {
-        if ((currentScreen == "filesharing" || currentScreen == "foldersharing") && !viewModel.checkFilePermissions()) {
+        // Request permissions for file/folder sharing screens
+        if ((currentScreen == "filesharing" || currentScreen == "foldersharing" || currentScreen == "sync") && !viewModel.checkFilePermissions()) {
             val filePermissions = viewModel.getFilePermissions()
             if (filePermissions.isNotEmpty()) {
                 filePermissionLauncher.launch(filePermissions)
             }
         }
+    }
+    
+    // Cleanup when switching screens
+    LaunchedEffect(currentScreen) {
+        // When leaving any feature screen, cleanup
+        if (previousScreen in listOf("filesharing", "foldersharing", "sync") && currentScreen != previousScreen) {
+            // Stop server and clear state from previous screen
+            viewModel.stopFileServer()
+            viewModel.clearFileMessages()
+            viewModel.clearFolderTransfer()
+        }
+        previousScreen = currentScreen
     }
 
     Scaffold(
@@ -160,7 +174,9 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                     // Back button for non-main screens
                     if (currentScreen != "devices") {
                         IconButton(
-                            onClick = { currentScreen = "devices" }
+                            onClick = { 
+                                currentScreen = "devices" 
+                            }
                         ) {
                             Icon(
                                 imageVector = Icons.Default.ArrowBack,
@@ -184,7 +200,9 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                 permissionsGranted = permissionsGranted,
                 statusMessage = statusMessage,
                 thisDevice = thisDevice,
-                onNavigateToFeature = { screen -> currentScreen = screen }
+                onNavigateToFeature = { screen -> 
+                    currentScreen = screen 
+                }
             )
             "filesharing" -> FileSharingScreen(
                 fileMessages = fileMessages,
