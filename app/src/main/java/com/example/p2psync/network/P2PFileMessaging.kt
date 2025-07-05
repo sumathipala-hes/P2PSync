@@ -1,6 +1,8 @@
 package com.example.p2psync.network
 
 import android.util.Log
+import android.net.Uri
+import androidx.documentfile.provider.DocumentFile
 import com.example.p2psync.data.FileMessage
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -62,6 +64,10 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
     private val activeConnections = ConcurrentHashMap<String, Socket>()
     private val connectionJobs = ConcurrentHashMap<String, Job>()
     private val coroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    // Receive directory state
+    private var customReceiveDirectory: File? = null
+    private var customReceiveDirectoryUri: Uri? = null
 
     /**
      * Start listening for incoming file transfers (server mode)
@@ -389,12 +395,94 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
      */
     private suspend fun receiveFileData(inputStream: InputStream, fileName: String, fileSize: Long, messageId: String): File? = withContext(Dispatchers.IO) {
         try {
-            val receiveDir = getReceiveDirectory()
-            val receivedFile = File(receiveDir, fileName)
+            // Check if we have a custom URI for receiving (folder sharing)
+            val customUri = getCurrentReceiveDirectoryUri()
             
-            Log.d(TAG, "Starting to receive file: $fileName, size: $fileSize bytes, to: ${receivedFile.absolutePath}")
+            if (customUri != null && context != null) {
+                // Use Storage Access Framework for custom folder
+                return@withContext receiveFileToCustomUri(inputStream, fileName, fileSize, messageId, customUri)
+            } else {
+                // Use traditional file system approach
+                val receiveDir = getCurrentReceiveDirectory()
+                val receivedFile = File(receiveDir, fileName)
+                
+                Log.d(TAG, "Starting to receive file: $fileName, size: $fileSize bytes, to: ${receivedFile.absolutePath}")
+                
+                FileOutputStream(receivedFile).use { fileOutputStream ->
+                    val buffer = ByteArray(BUFFER_SIZE)
+                    var bytesReceived = 0L
+                    var bytesRead: Int
+
+                    while (bytesReceived < fileSize) {
+                        val remainingBytes = (fileSize - bytesReceived).toInt()
+                        val bytesToRead = minOf(buffer.size, remainingBytes)
+                        
+                        bytesRead = inputStream.read(buffer, 0, bytesToRead)
+                        if (bytesRead == -1) {
+                            Log.w(TAG, "Unexpected end of stream at $bytesReceived/$fileSize bytes")
+                            break
+                        }
+                        
+                        fileOutputStream.write(buffer, 0, bytesRead)
+                        bytesReceived += bytesRead
+
+                        val progress = ((bytesReceived * 100) / fileSize).toInt()
+                        updateTransferProgress(messageId, progress)
+                        
+                        if (bytesReceived % (BUFFER_SIZE * 10) == 0L || bytesReceived == fileSize) {
+                            Log.v(TAG, "Received $bytesReceived/$fileSize bytes ($progress%)")
+                        }
+                    }
+                }
+
+                if (receivedFile.length() == fileSize) {
+                    Log.d(TAG, "File received successfully: $fileName at ${receivedFile.absolutePath}")
+                    receivedFile
+                } else {
+                    Log.e(TAG, "File size mismatch. Expected: $fileSize, Actual: ${receivedFile.length()}")
+                    receivedFile.delete()
+                    null
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error receiving file data: ${e.message}", e)
+            null
+        }
+    }
+
+    /**
+     * Receive file to custom URI using Storage Access Framework
+     */
+    private suspend fun receiveFileToCustomUri(
+        inputStream: InputStream, 
+        fileName: String, 
+        fileSize: Long, 
+        messageId: String, 
+        folderUri: Uri
+    ): File? = withContext(Dispatchers.IO) {
+        try {
+            if (context == null) {
+                Log.e(TAG, "Context is null, cannot write to custom URI")
+                return@withContext null
+            }
+
+            val documentFile = DocumentFile.fromTreeUri(context, folderUri)
+            if (documentFile == null || !documentFile.canWrite()) {
+                Log.e(TAG, "Cannot write to folder URI: $folderUri")
+                return@withContext null
+            }
+
+            // Create the file in the selected folder
+            val newFile = documentFile.createFile("application/octet-stream", fileName)
+            if (newFile == null) {
+                Log.e(TAG, "Failed to create file in selected folder: $fileName")
+                return@withContext null
+            }
+
+            Log.d(TAG, "Receiving file to custom folder: $fileName, size: $fileSize bytes")
             
-            FileOutputStream(receivedFile).use { fileOutputStream ->
+            // Write the file content using SAF
+            context.contentResolver.openOutputStream(newFile.uri)?.use { outputStream ->
                 val buffer = ByteArray(BUFFER_SIZE)
                 var bytesReceived = 0L
                 var bytesRead: Int
@@ -409,7 +497,7 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
                         break
                     }
                     
-                    fileOutputStream.write(buffer, 0, bytesRead)
+                    outputStream.write(buffer, 0, bytesRead)
                     bytesReceived += bytesRead
 
                     val progress = ((bytesReceived * 100) / fileSize).toInt()
@@ -421,17 +509,29 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
                 }
             }
 
-            if (receivedFile.length() == fileSize) {
-                Log.d(TAG, "File received successfully: $fileName at ${receivedFile.absolutePath}")
-                receivedFile
-            } else {
-                Log.e(TAG, "File size mismatch. Expected: $fileSize, Actual: ${receivedFile.length()}")
-                receivedFile.delete()
-                null
-            }
+            // Create a File object for display purposes (path won't be accessible but needed for FileMessage)
+            val displayFile = File(getDisplayPathFromUri(newFile.uri), fileName)
+            
+            Log.d(TAG, "File received successfully to custom folder: $fileName")
+            return@withContext displayFile
+            
         } catch (e: Exception) {
-            Log.e(TAG, "Error receiving file data: ${e.message}", e)
+            Log.e(TAG, "Error receiving file to custom URI: ${e.message}", e)
             null
+        }
+    }
+
+    /**
+     * Get display path from URI for user-friendly display
+     */
+    private fun getDisplayPathFromUri(uri: Uri): String {
+        return try {
+            val documentFile = DocumentFile.fromSingleUri(context ?: return "Custom Folder", uri)
+            val folderName = documentFile?.name ?: "Selected Folder"
+            "Custom Folder/$folderName"
+        } catch (e: Exception) {
+            Log.w(TAG, "Error getting display path from URI: ${e.message}")
+            "Custom Folder"
         }
     }
 
@@ -518,6 +618,36 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
     fun cleanup() {
         stopFileServer()
         coroutineScope.cancel()
+    }
+
+    /**
+     * Set custom directory for receiving files (for folder sharing)
+     */
+    fun setCustomReceiveDirectory(directory: File?) {
+        customReceiveDirectory = directory
+        Log.d(TAG, "Custom receive directory set to: ${directory?.absolutePath}")
+    }
+
+    /**
+     * Set custom URI for receiving files (for folder sharing with SAF)
+     */
+    fun setCustomReceiveDirectoryUri(uri: Uri?) {
+        customReceiveDirectoryUri = uri
+        Log.d(TAG, "Custom receive directory URI set to: $uri")
+    }
+
+    /**
+     * Get the current receive directory (custom or default)
+     */
+    fun getCurrentReceiveDirectory(): File {
+        return customReceiveDirectory ?: getReceiveDirectory()
+    }
+
+    /**
+     * Get the current receive directory URI (custom or null)
+     */
+    fun getCurrentReceiveDirectoryUri(): Uri? {
+        return customReceiveDirectoryUri
     }
 
     /**

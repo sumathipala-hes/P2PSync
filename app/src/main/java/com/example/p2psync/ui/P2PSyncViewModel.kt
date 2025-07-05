@@ -9,6 +9,7 @@ import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.p2psync.data.P2PDevice
@@ -16,6 +17,7 @@ import com.example.p2psync.data.FileMessage
 import com.example.p2psync.network.P2PConnectionManager
 import com.example.p2psync.network.P2PFileTransfer
 import com.example.p2psync.network.P2PFileMessaging
+import com.example.p2psync.utils.FolderUtils
 import java.io.File
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -55,6 +57,28 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
 
     private val _peerTransferMode = MutableStateFlow("none") // Track peer's mode
     val peerTransferMode: StateFlow<String> = _peerTransferMode.asStateFlow()
+
+    // Folder sharing state
+    private val _folderTransferMode = MutableStateFlow("none") // "send", "receive", "none"
+    val folderTransferMode: StateFlow<String> = _folderTransferMode.asStateFlow()
+
+    private val _selectedSendFolder = MutableStateFlow<File?>(null)
+    val selectedSendFolder: StateFlow<File?> = _selectedSendFolder.asStateFlow()
+
+    private val _selectedReceiveFolder = MutableStateFlow<File?>(null)
+    val selectedReceiveFolder: StateFlow<File?> = _selectedReceiveFolder.asStateFlow()
+
+    private val _selectedReceiveFolderUri = MutableStateFlow<Uri?>(null)
+    val selectedReceiveFolderUri: StateFlow<Uri?> = _selectedReceiveFolderUri.asStateFlow()
+
+    private val _folderTransferProgress = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val folderTransferProgress: StateFlow<Map<String, Int>> = _folderTransferProgress.asStateFlow()
+
+    private val _isFolderTransferring = MutableStateFlow(false)
+    val isFolderTransferring: StateFlow<Boolean> = _isFolderTransferring.asStateFlow()
+
+    private val _folderTransferStatus = MutableStateFlow("")
+    val folderTransferStatus: StateFlow<String> = _folderTransferStatus.asStateFlow()
 
     private val _permissionsGranted = MutableStateFlow(false)
     val permissionsGranted: StateFlow<Boolean> = _permissionsGranted.asStateFlow()
@@ -639,5 +663,175 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
         }
+    }
+
+    // Folder sharing functions
+    
+    /**
+     * Set folder transfer mode for sending or receiving folders
+     */
+    fun setFolderTransferMode(mode: String) {
+        _folderTransferMode.value = mode
+        _folderTransferStatus.value = when (mode) {
+            "send" -> "Ready to send folder - Select a folder to share"
+            "receive" -> "Ready to receive folder - Select destination folder"
+            else -> "Folder transfer mode cleared"
+        }
+    }
+
+    /**
+     * Set send folder path
+     */
+    fun setSelectedSendFolder(folder: File?) {
+        _selectedSendFolder.value = folder
+        if (folder != null) {
+            _folderTransferStatus.value = "Selected folder: ${folder.name} (${getFileCount(folder)} files)"
+        }
+    }
+
+    /**
+     * Set receive folder path and URI
+     */
+    fun setSelectedReceiveFolder(folder: File?, uri: Uri?) {
+        _selectedReceiveFolder.value = folder
+        _selectedReceiveFolderUri.value = uri
+        if (folder != null || uri != null) {
+            val folderName = folder?.name ?: uri?.let { 
+                DocumentFile.fromTreeUri(context, it)?.name 
+            } ?: "Selected Folder"
+            _folderTransferStatus.value = "Receive destination: $folderName"
+            // Set the custom receive directory URI in the file messaging service
+            fileMessaging.setCustomReceiveDirectoryUri(uri)
+        } else {
+            // Clear custom receive directory
+            fileMessaging.setCustomReceiveDirectoryUri(null)
+        }
+    }
+
+    /**
+     * Send entire folder to connected devices
+     */
+    fun sendFolder() {
+        val sendFolder = _selectedSendFolder.value
+        if (sendFolder == null) {
+            _folderTransferStatus.value = "Please select a folder to send"
+            return
+        }
+
+        if (_folderTransferMode.value != "send") {
+            _folderTransferStatus.value = "Please enable send mode first"
+            return
+        }
+
+        val currentDevice = thisDevice.value
+        if (currentDevice == null) {
+            _folderTransferStatus.value = "Device information not available"
+            return
+        }
+
+        val connInfo = connectionInfo.value
+        if (connInfo?.groupFormed != true) {
+            _folderTransferStatus.value = "No P2P connection available"
+            return
+        }
+
+        viewModelScope.launch {
+            _isFolderTransferring.value = true
+            _folderTransferStatus.value = "Scanning folder..."
+
+            try {
+                val files = getAllFilesInFolder(sendFolder)
+                if (files.isEmpty()) {
+                    _folderTransferStatus.value = "No files found in selected folder"
+                    _isFolderTransferring.value = false
+                    return@launch
+                }
+
+                _folderTransferStatus.value = "Sending ${files.size} files..."
+                
+                var successCount = 0
+                var failCount = 0
+
+                files.forEachIndexed { index, file ->
+                    val progress = ((index + 1) * 100) / files.size
+                    _folderTransferProgress.value = mapOf("overall" to progress)
+                    _folderTransferStatus.value = "Sending ${file.name} (${index + 1}/${files.size})"
+
+                    val result = if (connInfo.isGroupOwner) {
+                        fileMessaging.sendFileToAllClients(
+                            file = file,
+                            senderName = currentDevice.deviceName,
+                            senderAddress = currentDevice.deviceAddress
+                        )
+                    } else {
+                        val groupOwnerAddress = connInfo.groupOwnerAddress?.hostAddress
+                        if (groupOwnerAddress != null) {
+                            fileMessaging.sendFile(
+                                file = file,
+                                hostAddress = groupOwnerAddress,
+                                senderName = currentDevice.deviceName,
+                                senderAddress = currentDevice.deviceAddress
+                            )
+                        } else {
+                            Result.failure(Exception("Group owner address not available"))
+                        }
+                    }
+
+                    if (result.isSuccess) {
+                        successCount++
+                    } else {
+                        failCount++
+                        Log.w("P2PSyncViewModel", "Failed to send file ${file.name}: ${result.exceptionOrNull()?.message}")
+                    }
+                }
+
+                _folderTransferStatus.value = "Folder transfer completed: $successCount sent, $failCount failed"
+                
+            } catch (e: Exception) {
+                _folderTransferStatus.value = "Error sending folder: ${e.message}"
+                Log.e("P2PSyncViewModel", "Error sending folder", e)
+            } finally {
+                _isFolderTransferring.value = false
+                _folderTransferProgress.value = emptyMap()
+                // Reset to neutral mode after send attempt
+                _folderTransferMode.value = "none"
+                _selectedSendFolder.value = null
+            }
+        }
+    }
+
+    /**
+     * Get all files in a folder recursively
+     */
+    private fun getAllFilesInFolder(folder: File): List<File> {
+        return FolderUtils.getAllFilesInFolder(folder)
+    }
+
+    /**
+     * Get count of files in a folder
+     */
+    private fun getFileCount(folder: File): Int {
+        return getAllFilesInFolder(folder).size
+    }
+
+    /**
+     * Check if folder can be sent
+     */
+    fun canSendFolder(): Boolean {
+        return _selectedSendFolder.value != null && 
+               _folderTransferMode.value == "send" && 
+               canSendFiles()
+    }
+
+    /**
+     * Clear folder transfer state
+     */
+    fun clearFolderTransfer() {
+        _folderTransferMode.value = "none"
+        _selectedSendFolder.value = null
+        _selectedReceiveFolder.value = null
+        _selectedReceiveFolderUri.value = null
+        _folderTransferStatus.value = ""
+        _folderTransferProgress.value = emptyMap()
     }
 }
