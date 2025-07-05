@@ -252,6 +252,8 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                 onSetSelectedReceiveFolder = { folder, uri -> viewModel.setSelectedReceiveFolder(folder, uri) },
                 onSendFolder = { viewModel.sendFolder() },
                 onClearFolderTransfer = { viewModel.clearFolderTransfer() },
+                onRefreshClients = { viewModel.detectClientsForFolderSharing() },
+                onAnnouncePresence = { viewModel.detectClientsForFolderSharing() },
                 isGroupOwner = connectionInfo?.isGroupOwner == true,
                 connectedClients = if (connectionInfo?.isGroupOwner == true) {
                     connectedClients

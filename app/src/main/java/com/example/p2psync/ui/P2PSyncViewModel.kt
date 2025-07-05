@@ -665,6 +665,40 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /**
+     * Enhanced client detection specifically for folder sharing
+     */
+    fun detectClientsForFolderSharing() {
+        viewModelScope.launch {
+            val connInfo = connectionInfo.value
+            if (connInfo?.isGroupOwner == true && connInfo.groupFormed) {
+                Log.d("P2PSyncViewModel", "Detecting clients for folder sharing...")
+                _folderTransferStatus.value = "Detecting connected clients..."
+                
+                // Trigger multiple detection methods
+                detectPotentialClients()
+                delay(1000)
+                refreshConnectedClients()
+                
+                // Update status based on results
+                delay(1000)
+                val clientCount = fileMessaging.getAllActiveClientIPs().size
+                _folderTransferStatus.value = if (clientCount > 0) {
+                    "Ready for folder sharing - ${clientCount} client(s) detected"
+                } else {
+                    "Ready for folder sharing - Waiting for clients to connect"
+                }
+            } else if (connInfo?.groupFormed == true && !connInfo.isGroupOwner) {
+                Log.d("P2PSyncViewModel", "Announcing presence for folder sharing...")
+                _folderTransferStatus.value = "Announcing presence to group owner..."
+                
+                sendClientHello()
+                delay(1000)
+                _folderTransferStatus.value = "Ready for folder sharing - Connected to group owner"
+            }
+        }
+    }
+
     // Folder sharing functions
     
     /**
@@ -676,6 +710,16 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
             "send" -> "Ready to send folder - Select a folder to share"
             "receive" -> "Ready to receive folder - Select destination folder"
             else -> "Folder transfer mode cleared"
+        }
+        
+        // Trigger enhanced client detection/notification when entering folder mode
+        val connInfo = connectionInfo.value
+        if (connInfo?.groupFormed == true && mode != "none") {
+            viewModelScope.launch {
+                // Small delay to ensure UI has updated
+                delay(500)
+                detectClientsForFolderSharing()
+            }
         }
     }
 
@@ -696,15 +740,42 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
         _selectedReceiveFolder.value = folder
         _selectedReceiveFolderUri.value = uri
         if (folder != null || uri != null) {
-            val folderName = folder?.name ?: uri?.let { 
-                DocumentFile.fromTreeUri(context, it)?.name 
+            val folderPath = folder?.absolutePath ?: uri?.let { 
+                getAbsolutePathFromUri(it)
             } ?: "Selected Folder"
-            _folderTransferStatus.value = "Receive destination: $folderName"
+            _folderTransferStatus.value = "Receive destination: $folderPath"
             // Set the custom receive directory URI in the file messaging service
             fileMessaging.setCustomReceiveDirectoryUri(uri)
         } else {
             // Clear custom receive directory
             fileMessaging.setCustomReceiveDirectoryUri(null)
+        }
+    }
+
+    /**
+     * Get absolute path from URI for display
+     */
+    private fun getAbsolutePathFromUri(uri: Uri): String {
+        return try {
+            val documentFile = DocumentFile.fromTreeUri(context, uri)
+            val folderName = documentFile?.name ?: "Selected Folder"
+            
+            // Try to extract readable path from URI
+            val uriPath = uri.path
+            when {
+                uriPath?.contains("/tree/primary:") == true -> {
+                    val relativePath = uriPath.substringAfter("/tree/primary:")
+                    "/storage/emulated/0/$relativePath"
+                }
+                uriPath?.contains("/tree/") == true -> {
+                    val pathPart = uriPath.substringAfter("/tree/")
+                    "/storage/emulated/0/$pathPart"
+                }
+                else -> folderName
+            }
+        } catch (e: Exception) {
+            Log.w("P2PSyncViewModel", "Error getting absolute path from URI: ${e.message}")
+            "Selected Folder"
         }
     }
 

@@ -58,6 +58,8 @@ fun FolderSharingScreen(
     onSetSelectedReceiveFolder: (File?, Uri?) -> Unit = { _, _ -> },
     onSendFolder: () -> Unit = {},
     onClearFolderTransfer: () -> Unit = {},
+    onRefreshClients: () -> Unit = {},
+    onAnnouncePresence: () -> Unit = {},
     isGroupOwner: Boolean = false,
     connectedClients: List<String> = emptyList()
 ) {
@@ -171,6 +173,40 @@ fun FolderSharingScreen(
                             },
                             style = MaterialTheme.typography.bodyMedium
                         )
+                    }
+                    
+                    // Client detection buttons
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (isGroupOwner) {
+                            OutlinedButton(
+                                onClick = onRefreshClients,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Detect Clients", style = MaterialTheme.typography.bodySmall)
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = onAnnouncePresence,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Notifications,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Announce Presence", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
                     }
                 }
 

@@ -526,12 +526,53 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
      */
     private fun getDisplayPathFromUri(uri: Uri): String {
         return try {
+            // Try to get the absolute path from the folder URI
+            val folderUri = customReceiveDirectoryUri
+            if (folderUri != null) {
+                return getAbsolutePathFromUri(folderUri)
+            }
+            
+            // Fallback to document file name
             val documentFile = DocumentFile.fromSingleUri(context ?: return "Custom Folder", uri)
             val folderName = documentFile?.name ?: "Selected Folder"
             "Custom Folder/$folderName"
         } catch (e: Exception) {
             Log.w(TAG, "Error getting display path from URI: ${e.message}")
             "Custom Folder"
+        }
+    }
+
+    /**
+     * Get absolute path from URI for display
+     */
+    private fun getAbsolutePathFromUri(uri: Uri): String {
+        return try {
+            val uriPath = uri.path
+            when {
+                uriPath?.contains("/tree/primary:") == true -> {
+                    val relativePath = uriPath.substringAfter("/tree/primary:")
+                    if (relativePath.isEmpty()) {
+                        "/storage/emulated/0"
+                    } else {
+                        "/storage/emulated/0/$relativePath"
+                    }
+                }
+                uriPath?.contains("/tree/") == true -> {
+                    val pathPart = uriPath.substringAfter("/tree/").replace(":", "/")
+                    if (pathPart.startsWith("primary/")) {
+                        "/storage/emulated/0/${pathPart.substringAfter("primary/")}"
+                    } else {
+                        "/storage/emulated/0/$pathPart"
+                    }
+                }
+                else -> {
+                    val documentFile = DocumentFile.fromTreeUri(context ?: return "Selected Folder", uri)
+                    documentFile?.name ?: "Selected Folder"
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error getting absolute path from URI: ${e.message}")
+            "Selected Folder"
         }
     }
 
@@ -701,6 +742,10 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
     
     private fun getDisplayPath(filePath: String): String {
         return when {
+            // Check if this is a custom folder URI path (from SAF)
+            customReceiveDirectoryUri != null -> {
+                getAbsolutePathFromUri(customReceiveDirectoryUri!!) + "/"
+            }
             filePath.contains("/storage/emulated/0/Download/P2PSync") -> 
                 "Downloads/P2PSync/"
             filePath.contains("/storage/emulated/0/Download") -> 
@@ -710,14 +755,25 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
             filePath.contains("cache") -> 
                 "App Cache/"
             else -> {
-                // Extract last two directories for display
-                val file = File(filePath)
-                val parent = file.parentFile
-                val grandParent = parent?.parentFile
-                when {
-                    grandParent != null -> "${grandParent.name}/${parent.name}/"
-                    parent != null -> "${parent.name}/"
-                    else -> "Internal Storage/"
+                // For custom paths, try to show absolute path
+                if (filePath.startsWith("/storage/emulated/0/")) {
+                    val relativePath = filePath.substringAfter("/storage/emulated/0/")
+                    val pathParts = relativePath.split("/")
+                    if (pathParts.size >= 2) {
+                        "${pathParts.dropLast(1).joinToString("/")}/"
+                    } else {
+                        "Internal Storage/"
+                    }
+                } else {
+                    // Extract last two directories for display
+                    val file = File(filePath)
+                    val parent = file.parentFile
+                    val grandParent = parent?.parentFile
+                    when {
+                        grandParent != null -> "${grandParent.name}/${parent.name}/"
+                        parent != null -> "${parent.name}/"
+                        else -> "Internal Storage/"
+                    }
                 }
             }
         }
