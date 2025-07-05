@@ -29,6 +29,7 @@ import com.example.p2psync.data.P2PDevice
 import com.example.p2psync.ui.P2PSyncViewModel
 import com.example.p2psync.ui.components.FileSharingScreen
 import com.example.p2psync.ui.components.FolderSharingScreen
+import com.example.p2psync.ui.components.SyncScreen
 import com.example.p2psync.ui.theme.P2PSyncTheme
 
 class MainActivity : ComponentActivity() {
@@ -74,11 +75,18 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
     // Folder sharing state
     val folderTransferMode by viewModel.folderTransferMode.collectAsState()
     val selectedSendFolder by viewModel.selectedSendFolder.collectAsState()
+    val selectedSendFolderUri by viewModel.selectedSendFolderUri.collectAsState()
     val selectedReceiveFolder by viewModel.selectedReceiveFolder.collectAsState()
     val selectedReceiveFolderUri by viewModel.selectedReceiveFolderUri.collectAsState()
     val folderTransferProgress by viewModel.folderTransferProgress.collectAsState()
     val isFolderTransferring by viewModel.isFolderTransferring.collectAsState()
     val folderTransferStatus by viewModel.folderTransferStatus.collectAsState()
+    
+    // Sync state
+    val isSyncMode by viewModel.isSyncMode.collectAsState()
+    val syncStatus by viewModel.syncStatus.collectAsState()
+    val filesToSync by viewModel.filesToSync.collectAsState()
+    val syncProgress by viewModel.syncProgress.collectAsState()
     
     // Navigation state
     var currentScreen by remember { mutableStateOf("devices") }
@@ -136,6 +144,7 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                             "devices" -> "P2P Sync"
                             "filesharing" -> "File Sharing"
                             "foldersharing" -> "Folder Sharing"
+                            "sync" -> "One-Way Sync"
                             else -> "P2P Sync"
                         },
                         style = MaterialTheme.typography.headlineMedium,
@@ -153,7 +162,8 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                             currentScreen = when (currentScreen) {
                                 "devices" -> "filesharing"
                                 "filesharing" -> "foldersharing"
-                                "foldersharing" -> "devices"
+                                "foldersharing" -> "sync"
+                                "sync" -> "devices"
                                 else -> "devices"
                             }
                         }
@@ -162,13 +172,15 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                             imageVector = when (currentScreen) {
                                 "devices" -> Icons.Default.Folder
                                 "filesharing" -> Icons.Default.FolderOpen
-                                "foldersharing" -> Icons.Default.Devices
+                                "foldersharing" -> Icons.Default.Sync
+                                "sync" -> Icons.Default.Devices
                                 else -> Icons.Default.Devices
                             },
                             contentDescription = when (currentScreen) {
                                 "devices" -> "File Sharing"
                                 "filesharing" -> "Folder Sharing"
-                                "foldersharing" -> "Devices"
+                                "foldersharing" -> "One-Way Sync"
+                                "sync" -> "Devices"
                                 else -> "Switch View"
                             },
                             tint = MaterialTheme.colorScheme.onPrimary
@@ -238,6 +250,7 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                 folderTransferStatus = folderTransferStatus,
                 folderTransferMode = folderTransferMode,
                 selectedSendFolder = selectedSendFolder,
+                selectedSendFolderUri = selectedSendFolderUri,
                 selectedReceiveFolder = selectedReceiveFolder,
                 selectedReceiveFolderUri = selectedReceiveFolderUri,
                 onStartServer = { viewModel.startFileServer() },
@@ -249,9 +262,38 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                 onSetFolderSendMode = { viewModel.setFolderTransferMode("send") },
                 onSetFolderReceiveMode = { viewModel.setFolderTransferMode("receive") },
                 onSetSelectedSendFolder = { folder -> viewModel.setSelectedSendFolder(folder) },
+                onSetSelectedSendFolderUri = { uri, name -> viewModel.setSelectedSendFolderUri(uri, name) },
                 onSetSelectedReceiveFolder = { folder, uri -> viewModel.setSelectedReceiveFolder(folder, uri) },
                 onSendFolder = { viewModel.sendFolder() },
                 onClearFolderTransfer = { viewModel.clearFolderTransfer() },
+                onRefreshClients = { viewModel.detectClientsForFolderSharing() },
+                onAnnouncePresence = { viewModel.detectClientsForFolderSharing() },
+                isGroupOwner = connectionInfo?.isGroupOwner == true,
+                connectedClients = if (connectionInfo?.isGroupOwner == true) {
+                    connectedClients
+                } else {
+                    emptyList()
+                }
+            )
+            "sync" -> SyncScreen(
+                isListening = isListening,
+                connectionStatus = messagingConnectionStatus,
+                isConnected = isConnected,
+                hostAddress = viewModel.getTargetAddress(),
+                selectedSendFolder = selectedSendFolder,
+                selectedSendFolderUri = selectedSendFolderUri,
+                selectedReceiveFolder = selectedReceiveFolder,
+                selectedReceiveFolderUri = selectedReceiveFolderUri,
+                syncStatus = syncStatus,
+                filesToSync = filesToSync,
+                syncProgress = syncProgress,
+                onStartServer = { viewModel.startFileServer() },
+                onStopServer = { viewModel.stopFileServer() },
+                onSetSelectedSendFolder = { folder -> viewModel.setSelectedSendFolder(folder) },
+                onSetSelectedSendFolderUri = { uri, name -> viewModel.setSelectedSendFolderUri(uri, name) },
+                onSetSelectedReceiveFolder = { folder, uri -> viewModel.setSelectedReceiveFolder(folder, uri) },
+                onStartComparison = { viewModel.startFolderComparison() },
+                onStartSync = { viewModel.startSync() },
                 onRefreshClients = { viewModel.detectClientsForFolderSharing() },
                 onAnnouncePresence = { viewModel.detectClientsForFolderSharing() },
                 isGroupOwner = connectionInfo?.isGroupOwner == true,

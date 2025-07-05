@@ -65,6 +65,9 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
     private val _selectedSendFolder = MutableStateFlow<File?>(null)
     val selectedSendFolder: StateFlow<File?> = _selectedSendFolder.asStateFlow()
 
+    private val _selectedSendFolderUri = MutableStateFlow<Uri?>(null)
+    val selectedSendFolderUri: StateFlow<Uri?> = _selectedSendFolderUri.asStateFlow()
+
     private val _selectedReceiveFolder = MutableStateFlow<File?>(null)
     val selectedReceiveFolder: StateFlow<File?> = _selectedReceiveFolder.asStateFlow()
 
@@ -79,6 +82,19 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
 
     private val _folderTransferStatus = MutableStateFlow("")
     val folderTransferStatus: StateFlow<String> = _folderTransferStatus.asStateFlow()
+
+    // Folder sync state
+    private val _isSyncMode = MutableStateFlow(false)
+    val isSyncMode: StateFlow<Boolean> = _isSyncMode.asStateFlow()
+
+    private val _syncProgress = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val syncProgress: StateFlow<Map<String, Int>> = _syncProgress.asStateFlow()
+
+    private val _syncStatus = MutableStateFlow("")
+    val syncStatus: StateFlow<String> = _syncStatus.asStateFlow()
+
+    private val _filesToSync = MutableStateFlow<List<String>>(emptyList())
+    val filesToSync: StateFlow<List<String>> = _filesToSync.asStateFlow()
 
     private val _permissionsGranted = MutableStateFlow(false)
     val permissionsGranted: StateFlow<Boolean> = _permissionsGranted.asStateFlow()
@@ -728,8 +744,26 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
      */
     fun setSelectedSendFolder(folder: File?) {
         _selectedSendFolder.value = folder
+        _selectedSendFolderUri.value = null // Clear URI when setting File
         if (folder != null) {
             _folderTransferStatus.value = "Selected folder: ${folder.name} (${getFileCount(folder)} files)"
+        }
+    }
+
+    /**
+     * Set send folder URI (for storage access framework)
+     */
+    fun setSelectedSendFolderUri(folderUri: Uri?, folderName: String? = null) {
+        _selectedSendFolderUri.value = folderUri
+        _selectedSendFolder.value = null // Clear File when setting URI
+        if (folderUri != null) {
+            val displayName = folderName ?: "Selected Folder"
+            try {
+                val fileCount = fileMessaging.getFileListFromFolderUri(folderUri).size
+                _folderTransferStatus.value = "Selected folder: $displayName ($fileCount files)"
+            } catch (e: Exception) {
+                _folderTransferStatus.value = "Selected folder: $displayName"
+            }
         }
     }
 
@@ -784,7 +818,9 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
      */
     fun sendFolder() {
         val sendFolder = _selectedSendFolder.value
-        if (sendFolder == null) {
+        val sendFolderUri = _selectedSendFolderUri.value
+        
+        if (sendFolder == null && sendFolderUri == null) {
             _folderTransferStatus.value = "Please select a folder to send"
             return
         }
@@ -811,7 +847,13 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
             _folderTransferStatus.value = "Scanning folder..."
 
             try {
-                val files = getAllFilesInFolder(sendFolder)
+                val files = if (sendFolder != null) {
+                    getAllFilesInFolder(sendFolder)
+                } else {
+                    // For URI-based folders, we need to get files differently
+                    getAllFilesInFolderUri(sendFolderUri!!)
+                }
+                
                 if (files.isEmpty()) {
                     _folderTransferStatus.value = "No files found in selected folder"
                     _isFolderTransferring.value = false
@@ -872,6 +914,27 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
     }
 
     /**
+     * Get all files in a URI-based folder
+     */
+    private fun getAllFilesInFolderUri(folderUri: Uri): List<File> {
+        val fileList = mutableListOf<File>()
+        try {
+            val syncFileInfoList = fileMessaging.getFileListFromFolderUri(folderUri)
+            
+            // Convert SyncFileInfo to File objects by creating temporary files
+            for (syncFileInfo in syncFileInfoList) {
+                val tempFile = FolderUtils.getFileFromUriFolder(context, folderUri, syncFileInfo.relativePath)
+                if (tempFile != null) {
+                    fileList.add(tempFile)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("P2PSyncViewModel", "Error getting files from URI folder: ${e.message}", e)
+        }
+        return fileList
+    }
+
+    /**
      * Get all files in a folder recursively
      */
     private fun getAllFilesInFolder(folder: File): List<File> {
@@ -889,7 +952,7 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
      * Check if folder can be sent
      */
     fun canSendFolder(): Boolean {
-        return _selectedSendFolder.value != null && 
+        return (_selectedSendFolder.value != null || _selectedSendFolderUri.value != null) && 
                _folderTransferMode.value == "send" && 
                canSendFiles()
     }
@@ -900,9 +963,266 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
     fun clearFolderTransfer() {
         _folderTransferMode.value = "none"
         _selectedSendFolder.value = null
+        _selectedSendFolderUri.value = null
         _selectedReceiveFolder.value = null
         _selectedReceiveFolderUri.value = null
         _folderTransferStatus.value = ""
         _folderTransferProgress.value = emptyMap()
+        _isSyncMode.value = false
+        _syncStatus.value = ""
+        _filesToSync.value = emptyList()
+    }
+
+    // Folder Synchronization Methods
+
+    /**
+     * Enable sync mode for one-way folder synchronization
+     */
+    fun enableSyncMode() {
+        _isSyncMode.value = true
+        _folderTransferStatus.value = "Sync mode enabled - Select folders on both devices"
+    }
+
+    /**
+     * Disable sync mode
+     */
+    fun disableSyncMode() {
+        _isSyncMode.value = false
+        _syncStatus.value = ""
+        _filesToSync.value = emptyList()
+        fileMessaging.setSyncingState(false)
+    }
+
+    /**
+     * Start folder comparison for synchronization
+     */
+    fun startFolderComparison() {
+        val sendFolder = _selectedSendFolder.value
+        val sendFolderUri = _selectedSendFolderUri.value
+        
+        if (sendFolder == null && sendFolderUri == null) {
+            _syncStatus.value = "Please select a source folder to sync"
+            return
+        }
+
+        val connInfo = connectionInfo.value
+        if (connInfo?.groupFormed != true) {
+            _syncStatus.value = "No P2P connection available"
+            return
+        }
+
+        val currentDevice = thisDevice.value
+        if (currentDevice == null) {
+            _syncStatus.value = "Device information not available"
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                _syncStatus.value = "Analyzing source folder..."
+                fileMessaging.setSyncingState(true)
+
+                // Get source files from either File or URI
+                val sourceFiles = if (sendFolder != null) {
+                    fileMessaging.getFileListFromFolder(sendFolder)
+                } else {
+                    fileMessaging.getFileListFromFolderUri(sendFolderUri!!)
+                }
+                Log.d("P2PSyncViewModel", "Found ${sourceFiles.size} files in source folder")
+
+                if (sourceFiles.isEmpty()) {
+                    _syncStatus.value = "No files found in source folder"
+                    fileMessaging.setSyncingState(false)
+                    return@launch
+                }
+
+                _syncStatus.value = "Requesting file list from receiver..."
+
+                // Get target files from remote device
+                val targetAddress = if (connInfo.isGroupOwner) {
+                    // Get first connected client
+                    val clients = fileMessaging.getAllActiveClientIPs()
+                    if (clients.isEmpty()) {
+                        _syncStatus.value = "No connected clients found"
+                        fileMessaging.setSyncingState(false)
+                        return@launch
+                    }
+                    clients.first()
+                } else {
+                    // Send to group owner
+                    connInfo.groupOwnerAddress?.hostAddress
+                }
+
+                if (targetAddress == null) {
+                    _syncStatus.value = "Target device address not available"
+                    fileMessaging.setSyncingState(false)
+                    return@launch
+                }
+
+                val targetFilesResult = fileMessaging.requestFileListFromRemote(targetAddress)
+                
+                if (targetFilesResult.isFailure) {
+                    _syncStatus.value = "Failed to get file list from receiver: ${targetFilesResult.exceptionOrNull()?.message}"
+                    fileMessaging.setSyncingState(false)
+                    return@launch
+                }
+
+                val targetFiles = targetFilesResult.getOrNull() ?: emptyList()
+                Log.d("P2PSyncViewModel", "Received ${targetFiles.size} files from target device")
+
+                _syncStatus.value = "Comparing files..."
+
+                // Compare files and determine what needs to be synced
+                val filesToSync = fileMessaging.getFilesToSync(sourceFiles, targetFiles)
+                
+                _filesToSync.value = filesToSync.map { "${it.relativePath} (${formatFileSize(it.size)})" }
+                
+                if (filesToSync.isEmpty()) {
+                    _syncStatus.value = "All files are up to date - No sync needed"
+                } else {
+                    _syncStatus.value = "Ready to sync ${filesToSync.size} files"
+                    Log.d("P2PSyncViewModel", "Files to sync: ${filesToSync.map { it.relativePath }}")
+                }
+
+                fileMessaging.setSyncingState(false)
+
+            } catch (e: Exception) {
+                _syncStatus.value = "Error during folder comparison: ${e.message}"
+                fileMessaging.setSyncingState(false)
+                Log.e("P2PSyncViewModel", "Error in folder comparison", e)
+            }
+        }
+    }
+
+    /**
+     * Start synchronization of identified files
+     */
+    fun startSync() {
+        val sendFolder = _selectedSendFolder.value
+        val sendFolderUri = _selectedSendFolderUri.value
+        
+        if (sendFolder == null && sendFolderUri == null) {
+            _syncStatus.value = "Please select a source folder"
+            return
+        }
+
+        val filesToSyncList = _filesToSync.value
+        if (filesToSyncList.isEmpty()) {
+            _syncStatus.value = "No files to sync. Run comparison first."
+            return
+        }
+
+        val connInfo = connectionInfo.value
+        if (connInfo?.groupFormed != true) {
+            _syncStatus.value = "No P2P connection available"
+            return
+        }
+
+        val currentDevice = thisDevice.value
+        if (currentDevice == null) {
+            _syncStatus.value = "Device information not available"
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                fileMessaging.setSyncingState(true)
+                _syncStatus.value = "Starting file synchronization..."
+
+                // Re-get source files to ensure we have the latest file objects
+                val sourceFiles = if (sendFolder != null) {
+                    fileMessaging.getFileListFromFolder(sendFolder)
+                } else {
+                    fileMessaging.getFileListFromFolderUri(sendFolderUri!!)
+                }
+                val sourceFileMap = sourceFiles.associateBy { it.relativePath }
+
+                // Get files that need to be synced (extract relative paths from display strings)
+                val filesToSyncPaths = _filesToSync.value.map { displayString ->
+                    displayString.substringBefore(" (") // Remove size info
+                }
+
+                var successCount = 0
+                var failCount = 0
+                val totalFiles = filesToSyncPaths.size
+
+                for ((index, relativePath) in filesToSyncPaths.withIndex()) {
+                    val progress = ((index + 1) * 100) / totalFiles
+                    _syncProgress.value = mapOf("overall" to progress)
+                    
+                    val sourceFileInfo = sourceFileMap[relativePath]
+                    if (sourceFileInfo == null) {
+                        Log.w("P2PSyncViewModel", "Source file not found: $relativePath")
+                        failCount++
+                        continue
+                    }
+
+                    val actualFile = if (sendFolder != null) {
+                        File(sendFolder, relativePath)
+                    } else {
+                        // Get file from URI-based folder
+                        FolderUtils.getFileFromUriFolder(context, sendFolderUri!!, relativePath)
+                    }
+                    
+                    if (actualFile?.exists() != true) {
+                        Log.w("P2PSyncViewModel", "Actual file not found: $relativePath")
+                        failCount++
+                        continue
+                    }
+
+                    _syncStatus.value = "Syncing ${actualFile.name} (${index + 1}/$totalFiles)"
+
+                    val result = if (connInfo.isGroupOwner) {
+                        fileMessaging.sendFileToAllClients(
+                            file = actualFile,
+                            senderName = currentDevice.deviceName,
+                            senderAddress = currentDevice.deviceAddress
+                        )
+                    } else {
+                        val groupOwnerAddress = connInfo.groupOwnerAddress?.hostAddress
+                        if (groupOwnerAddress != null) {
+                            fileMessaging.sendFile(
+                                file = actualFile,
+                                hostAddress = groupOwnerAddress,
+                                senderName = currentDevice.deviceName,
+                                senderAddress = currentDevice.deviceAddress
+                            )
+                        } else {
+                            Result.failure(Exception("Group owner address not available"))
+                        }
+                    }
+
+                    if (result.isSuccess) {
+                        successCount++
+                        Log.d("P2PSyncViewModel", "Successfully synced: $relativePath")
+                    } else {
+                        failCount++
+                        Log.w("P2PSyncViewModel", "Failed to sync: $relativePath - ${result.exceptionOrNull()?.message}")
+                    }
+                }
+
+                _syncStatus.value = "Synchronization completed: $successCount synced, $failCount failed"
+                _filesToSync.value = emptyList() // Clear the list after sync
+
+            } catch (e: Exception) {
+                _syncStatus.value = "Error during synchronization: ${e.message}"
+                Log.e("P2PSyncViewModel", "Error in synchronization", e)
+            } finally {
+                fileMessaging.setSyncingState(false)
+                _syncProgress.value = emptyMap()
+            }
+        }
+    }
+
+    /**
+     * Format file size for display
+     */
+    private fun formatFileSize(size: Long): String {
+        return when {
+            size < 1024 -> "${size}B"
+            size < 1024 * 1024 -> "${size / 1024}KB"
+            size < 1024 * 1024 * 1024 -> "${size / (1024 * 1024)}MB"
+            else -> "${size / (1024 * 1024 * 1024)}GB"
+        }
     }
 }

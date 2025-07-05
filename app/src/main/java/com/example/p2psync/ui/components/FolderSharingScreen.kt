@@ -46,6 +46,7 @@ fun FolderSharingScreen(
     folderTransferStatus: String,
     folderTransferMode: String,
     selectedSendFolder: File?,
+    selectedSendFolderUri: Uri?,
     selectedReceiveFolder: File?,
     selectedReceiveFolderUri: Uri?,
     onStartServer: () -> Unit,
@@ -55,6 +56,7 @@ fun FolderSharingScreen(
     onSetFolderSendMode: () -> Unit = {},
     onSetFolderReceiveMode: () -> Unit = {},
     onSetSelectedSendFolder: (File?) -> Unit = {},
+    onSetSelectedSendFolderUri: (Uri?, String?) -> Unit = { _, _ -> },
     onSetSelectedReceiveFolder: (File?, Uri?) -> Unit = { _, _ -> },
     onSendFolder: () -> Unit = {},
     onClearFolderTransfer: () -> Unit = {},
@@ -72,7 +74,7 @@ fun FolderSharingScreen(
     var showFolderSelection by remember { mutableStateOf(false) }
     var showReceiveFolderSelection by remember { mutableStateOf(false) }
 
-    // Folder picker launcher for sending (custom picker)
+    // Folder picker launcher for sending (direct URI usage)
     val sendFolderPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
@@ -80,13 +82,9 @@ fun FolderSharingScreen(
             try {
                 val documentFile = DocumentFile.fromTreeUri(context, folderUri)
                 documentFile?.let { doc ->
-                    // Create a temporary folder representation
                     val folderName = doc.name ?: "Selected Folder"
-                    val files = FolderUtils.getFilesFromDocumentUri(context, folderUri)
-                    
-                    // Create temporary folder structure
-                    val tempFolder = FolderUtils.createTemporaryFolderStructure(context, folderName, files)
-                    tempFolder?.let { onSetSelectedSendFolder(it) }
+                    // Call the new URI-based method
+                    onSetSelectedSendFolderUri(folderUri, folderName)
                 }
             } catch (e: Exception) {
                 // Handle error
@@ -295,11 +293,27 @@ fun FolderSharingScreen(
 
                 // Folder Selection for Send Mode
                 if (folderTransferMode == "send") {
+                    // Create a synthetic File for display if URI is selected
+                    val displaySendFolder = selectedSendFolder ?: selectedSendFolderUri?.let { uri ->
+                        // Create a display-only File object from URI
+                        try {
+                            val documentFile = DocumentFile.fromTreeUri(context, uri)
+                            val folderName = documentFile?.name ?: "Selected Folder"
+                            // Create a fake File for display purposes only
+                            File("/storage/emulated/0/$folderName")
+                        } catch (e: Exception) {
+                            null
+                        }
+                    }
+                    
                     FolderSelectionCard(
                         title = "Select Folder to Send",
-                        selectedFolder = selectedSendFolder,
+                        selectedFolder = displaySendFolder,
                         onSelectFolder = { showFolderSelection = true },
-                        onClearSelection = { onSetSelectedSendFolder(null) },
+                        onClearSelection = { 
+                            onSetSelectedSendFolder(null)
+                            onSetSelectedSendFolderUri(null, null)
+                        },
                         availableFolders = availableFolders,
                         onFolderSelected = { folder ->
                             onSetSelectedSendFolder(folder.folder)
@@ -314,7 +328,7 @@ fun FolderSharingScreen(
                     )
 
                     // Send Button
-                    if (selectedSendFolder != null && !isFolderTransferring) {
+                    if ((selectedSendFolder != null || selectedSendFolderUri != null) && !isFolderTransferring) {
                         Button(
                             onClick = onSendFolder,
                             modifier = Modifier.fillMaxWidth(),
@@ -371,7 +385,7 @@ fun FolderSharingScreen(
                 }
 
                 // Clear button
-                if (folderTransferMode != "none" || selectedSendFolder != null || selectedReceiveFolder != null) {
+                if (folderTransferMode != "none" || selectedSendFolder != null || selectedSendFolderUri != null || selectedReceiveFolder != null) {
                     OutlinedButton(
                         onClick = onClearFolderTransfer,
                         modifier = Modifier.fillMaxWidth()
@@ -387,6 +401,8 @@ fun FolderSharingScreen(
                 }
             }
         }
+
+
 
         // Server Controls
         Row(

@@ -15,6 +15,17 @@ import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 
 /**
+ * Data class for file information in sync operations
+ */
+data class SyncFileInfo(
+    val name: String,
+    val size: Long,
+    val lastModified: Long,
+    val relativePath: String,
+    val checksum: String? = null
+)
+
+/**
  * Data class to hold client connection information
  */
 data class ClientInfo(
@@ -38,6 +49,9 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
         private const val METADATA_SEPARATOR = ":::"
         private const val KEEP_ALIVE_MESSAGE = "KEEP_ALIVE"
         private const val CLIENT_HELLO_MESSAGE = "CLIENT_HELLO"
+        private const val FILE_LIST_REQUEST = "FILE_LIST_REQUEST"
+        private const val FILE_LIST_RESPONSE = "FILE_LIST_RESPONSE"
+        private const val SYNC_START = "SYNC_START"
         private const val KEEP_ALIVE_INTERVAL = 30000L
     }
 
@@ -56,6 +70,20 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
     private val _connectedClientsInfo = MutableStateFlow<List<String>>(emptyList())
     val connectedClientsInfo: StateFlow<List<String>> = _connectedClientsInfo.asStateFlow()
 
+    // Receive directory state
+    private var customReceiveDirectory: File? = null
+    private var customReceiveDirectoryUri: Uri? = null
+
+    // Sync-related state
+    private val _syncProgress = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val syncProgress: StateFlow<Map<String, Int>> = _syncProgress.asStateFlow()
+
+    private val _isSyncing = MutableStateFlow(false)
+    val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
+
+    private val _syncStatus = MutableStateFlow("")
+    val syncStatus: StateFlow<String> = _syncStatus.asStateFlow()
+
     private var messageServerSocket: ServerSocket? = null
     private var isServerRunning = false
     private var serverJob: Job? = null
@@ -64,10 +92,6 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
     private val activeConnections = ConcurrentHashMap<String, Socket>()
     private val connectionJobs = ConcurrentHashMap<String, Job>()
     private val coroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
-    // Receive directory state
-    private var customReceiveDirectory: File? = null
-    private var customReceiveDirectoryUri: Uri? = null
 
     /**
      * Start listening for incoming file transfers (server mode)
@@ -261,6 +285,35 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
                             Log.d(TAG, "Sent HELLO_ACK to $clientAddress")
                         } catch (e: Exception) {
                             Log.w(TAG, "Failed to send HELLO_ACK: ${e.message}")
+                        }
+                        continue
+                    }
+
+                    if (metadataString == FILE_LIST_REQUEST) {
+                        Log.d(TAG, "Received FILE_LIST_REQUEST from $clientAddress")
+                        try {
+                            // Get file list from current receive directory
+                            val fileList = if (customReceiveDirectoryUri != null && context != null) {
+                                getFileListFromFolderUri(customReceiveDirectoryUri!!)
+                            } else {
+                                val receiveDir = getCurrentReceiveDirectory()
+                                getFileListFromFolder(receiveDir)
+                            }
+                            
+                            // Convert to JSON and send response
+                            val fileListJson = fileListToJson(fileList)
+                            val responseMessage = "$FILE_LIST_RESPONSE$METADATA_SEPARATOR$fileListJson"
+                            val responseBytes = responseMessage.toByteArray(Charsets.UTF_8)
+                            
+                            // Send response length first
+                            val lengthBuffer = java.nio.ByteBuffer.allocate(4).putInt(responseBytes.size).array()
+                            outputStream.write(lengthBuffer)
+                            outputStream.write(responseBytes)
+                            outputStream.flush()
+                            
+                            Log.d(TAG, "Sent file list response with ${fileList.size} files")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to send file list response: ${e.message}")
                         }
                         continue
                     }
@@ -1013,5 +1066,259 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
             Log.e(TAG, "Error sending CLIENT_HELLO: ${e.message}", e)
             Result.failure(e)
         }
+    }
+
+    // Folder Synchronization Methods
+
+    /**
+     * Get file list from a folder for synchronization
+     */
+    fun getFileListFromFolder(folder: File): List<SyncFileInfo> {
+        val fileList = mutableListOf<SyncFileInfo>()
+        
+        try {
+            if (!folder.exists() || !folder.isDirectory) {
+                Log.w(TAG, "Folder does not exist or is not a directory: ${folder.absolutePath}")
+                return fileList
+            }
+            
+            folder.walkTopDown().forEach { file ->
+                if (file.isFile) {
+                    val relativePath = file.relativeTo(folder).path
+                    fileList.add(
+                        SyncFileInfo(
+                            name = file.name,
+                            size = file.length(),
+                            lastModified = file.lastModified(),
+                            relativePath = relativePath
+                        )
+                    )
+                }
+            }
+            
+            Log.d(TAG, "Found ${fileList.size} files in folder: ${folder.name}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting file list from folder: ${e.message}", e)
+        }
+        
+        return fileList
+    }
+
+    /**
+     * Get file list from URI-based folder for synchronization
+     */
+    fun getFileListFromFolderUri(folderUri: Uri): List<SyncFileInfo> {
+        val fileList = mutableListOf<SyncFileInfo>()
+        
+        try {
+            if (context == null) {
+                Log.w(TAG, "Context is null, cannot read from URI")
+                return fileList
+            }
+            
+            val documentFile = DocumentFile.fromTreeUri(context, folderUri)
+            if (documentFile == null || !documentFile.canRead()) {
+                Log.w(TAG, "Cannot read from folder URI: $folderUri")
+                return fileList
+            }
+            
+            addFilesFromDocumentFile(documentFile, "", fileList)
+            
+            Log.d(TAG, "Found ${fileList.size} files in URI folder")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting file list from URI: ${e.message}", e)
+        }
+        
+        return fileList
+    }
+
+    /**
+     * Recursively add files from DocumentFile to sync file list
+     */
+    private fun addFilesFromDocumentFile(
+        documentFile: DocumentFile, 
+        relativePath: String, 
+        fileList: MutableList<SyncFileInfo>
+    ) {
+        try {
+            documentFile.listFiles().forEach { file ->
+                if (file.isFile) {
+                    val fileName = file.name ?: "unknown"
+                    val fullRelativePath = if (relativePath.isEmpty()) fileName else "$relativePath/$fileName"
+                    
+                    fileList.add(
+                        SyncFileInfo(
+                            name = fileName,
+                            size = file.length(),
+                            lastModified = file.lastModified(),
+                            relativePath = fullRelativePath
+                        )
+                    )
+                } else if (file.isDirectory) {
+                    val dirName = file.name ?: "unknown"
+                    val newRelativePath = if (relativePath.isEmpty()) dirName else "$relativePath/$dirName"
+                    addFilesFromDocumentFile(file, newRelativePath, fileList)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error reading directory: ${e.message}")
+        }
+    }
+
+    /**
+     * Request file list from remote device
+     */
+    suspend fun requestFileListFromRemote(hostAddress: String): Result<List<SyncFileInfo>> = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "Requesting file list from $hostAddress")
+            
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress(hostAddress, FILE_PORT), CONNECTION_TIMEOUT)
+                
+                val outputStream = socket.getOutputStream()
+                val inputStream = socket.getInputStream()
+                
+                // Send file list request
+                val requestMessage = FILE_LIST_REQUEST
+                val requestBytes = requestMessage.toByteArray(Charsets.UTF_8)
+                
+                // Send request length first
+                val lengthBuffer = java.nio.ByteBuffer.allocate(4).putInt(requestBytes.size).array()
+                outputStream.write(lengthBuffer)
+                outputStream.write(requestBytes)
+                outputStream.flush()
+                
+                Log.d(TAG, "Sent file list request")
+                
+                // Read response
+                val responseLengthBuffer = ByteArray(4)
+                val lengthBytesRead = inputStream.read(responseLengthBuffer)
+                if (lengthBytesRead != 4) {
+                    throw Exception("Could not read response length")
+                }
+                
+                val responseLength = java.nio.ByteBuffer.wrap(responseLengthBuffer).int
+                if (responseLength <= 0 || responseLength > 1024000) { // Max 1MB for file list
+                    throw Exception("Invalid response length: $responseLength")
+                }
+                
+                // Read response data
+                val responseBuffer = ByteArray(responseLength)
+                var totalRead = 0
+                while (totalRead < responseLength) {
+                    val bytesRead = inputStream.read(responseBuffer, totalRead, responseLength - totalRead)
+                    if (bytesRead == -1) break
+                    totalRead += bytesRead
+                }
+                
+                if (totalRead != responseLength) {
+                    throw Exception("Could not read complete response")
+                }
+                
+                val responseString = String(responseBuffer, Charsets.UTF_8)
+                Log.d(TAG, "Received file list response: ${responseString.length} characters")
+                
+                // Parse response
+                if (responseString.startsWith(FILE_LIST_RESPONSE)) {
+                    val fileListJson = responseString.substringAfter("$FILE_LIST_RESPONSE$METADATA_SEPARATOR")
+                    val fileList = parseFileListFromJson(fileListJson)
+                    Result.success(fileList)
+                } else {
+                    throw Exception("Invalid response format")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error requesting file list from remote: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Compare two file lists and return files that need to be synced
+     * Comparison is based on file name (relative path) and size only
+     */
+    fun getFilesToSync(sourceFiles: List<SyncFileInfo>, targetFiles: List<SyncFileInfo>): List<SyncFileInfo> {
+        val targetFileMap = targetFiles.associateBy { it.relativePath }
+        
+        return sourceFiles.filter { sourceFile ->
+            val targetFile = targetFileMap[sourceFile.relativePath]
+            when {
+                targetFile == null -> {
+                    Log.d(TAG, "File not in target: ${sourceFile.relativePath}")
+                    true // File doesn't exist in target
+                }
+                sourceFile.size != targetFile.size -> {
+                    Log.d(TAG, "File size differs: ${sourceFile.relativePath} (${sourceFile.size} vs ${targetFile.size})")
+                    true // File size is different
+                }
+                else -> {
+                    Log.d(TAG, "File is up to date: ${sourceFile.relativePath}")
+                    false // File is up to date (same name and size)
+                }
+            }
+        }
+    }
+
+    /**
+     * Simple JSON parsing for file list (basic implementation)
+     */
+    private fun parseFileListFromJson(json: String): List<SyncFileInfo> {
+        val fileList = mutableListOf<SyncFileInfo>()
+        
+        try {
+            // Simple parsing - each line is: name|size|lastModified|relativePath
+            val lines = json.split("\n").filter { it.isNotBlank() }
+            
+            for (line in lines) {
+                val parts = line.split("|")
+                if (parts.size >= 4) {
+                    fileList.add(
+                        SyncFileInfo(
+                            name = parts[0],
+                            size = parts[1].toLongOrNull() ?: 0L,
+                            lastModified = parts[2].toLongOrNull() ?: 0L,
+                            relativePath = parts[3]
+                        )
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing file list JSON: ${e.message}")
+        }
+        
+        return fileList
+    }
+
+    /**
+     * Convert file list to simple JSON format
+     */
+    private fun fileListToJson(fileList: List<SyncFileInfo>): String {
+        return fileList.joinToString("\n") { file ->
+            "${file.name}|${file.size}|${file.lastModified}|${file.relativePath}"
+        }
+    }
+
+    /**
+     * Update sync progress
+     */
+    private fun updateSyncProgress(operation: String, progress: Int) {
+        val currentProgress = _syncProgress.value.toMutableMap()
+        currentProgress[operation] = progress
+        _syncProgress.value = currentProgress
+    }
+
+    /**
+     * Update sync status
+     */
+    fun updateSyncStatus(status: String) {
+        _syncStatus.value = status
+        Log.d(TAG, "Sync status: $status")
+    }
+
+    /**
+     * Set syncing state
+     */
+    fun setSyncingState(isSyncing: Boolean) {
+        _isSyncing.value = isSyncing
     }
 }

@@ -205,6 +205,50 @@ object FolderUtils {
         addFiles(folder)
         return files
     }
+
+    /**
+     * Get a File object from URI-based folder and relative path
+     * Creates a temporary file for sending
+     */
+    fun getFileFromUriFolder(context: Context, folderUri: Uri, relativePath: String): File? {
+        try {
+            val documentFile = DocumentFile.fromTreeUri(context, folderUri) ?: return null
+            
+            // Navigate to the file using the relative path
+            var currentDir = documentFile
+            val pathParts = relativePath.split("/")
+            
+            for (i in 0 until pathParts.size - 1) {
+                val dirName = pathParts[i]
+                currentDir = currentDir.findFile(dirName) ?: return null
+                if (!currentDir.isDirectory) return null
+            }
+            
+            val fileName = pathParts.last()
+            val targetFile = currentDir.findFile(fileName) ?: return null
+            
+            if (!targetFile.isFile) return null
+            
+            // Create a temporary file
+            val tempDir = File(context.cacheDir, "temp_sync_files")
+            tempDir.mkdirs()
+            
+            val tempFile = File(tempDir, fileName)
+            
+            // Copy content to temporary file
+            context.contentResolver.openInputStream(targetFile.uri)?.use { input ->
+                tempFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            
+            return tempFile
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting file from URI folder: ${e.message}", e)
+            return null
+        }
+    }
 }
 
 data class FileInfo(
