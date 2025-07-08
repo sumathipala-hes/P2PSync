@@ -229,11 +229,13 @@ object FolderUtils {
             
             if (!targetFile.isFile) return null
             
-            // Create a temporary file
+            // Create a temporary file with original name preserved
             val tempDir = File(context.cacheDir, "temp_sync_files")
             tempDir.mkdirs()
             
-            val tempFile = File(tempDir, fileName)
+            // Use a unique temporary filename but preserve original for sending
+            val uniqueSuffix = System.currentTimeMillis()
+            val tempFile = File(tempDir, "${fileName}_$uniqueSuffix")
             
             // Copy content to temporary file
             context.contentResolver.openInputStream(targetFile.uri)?.use { input ->
@@ -246,6 +248,75 @@ object FolderUtils {
             
         } catch (e: Exception) {
             Log.e(TAG, "Error getting file from URI folder: ${e.message}", e)
+            return null
+        }
+    }
+
+    /**
+     * Get file data directly from URI folder without creating temporary files
+     * This preserves the original file name during sync operations
+     */
+    fun getFileDataFromUriFolder(context: Context, folderUri: Uri, relativePath: String): ByteArray? {
+        try {
+            val documentFile = DocumentFile.fromTreeUri(context, folderUri) ?: return null
+            
+            // Navigate to the file using the relative path
+            var currentDir = documentFile
+            val pathParts = relativePath.split("/")
+            
+            for (i in 0 until pathParts.size - 1) {
+                val dirName = pathParts[i]
+                currentDir = currentDir.findFile(dirName) ?: return null
+                if (!currentDir.isDirectory) return null
+            }
+            
+            val fileName = pathParts.last()
+            val targetFile = currentDir.findFile(fileName) ?: return null
+            
+            if (!targetFile.isFile) return null
+            
+            // Read file data directly
+            return context.contentResolver.openInputStream(targetFile.uri)?.use { input ->
+                input.readBytes()
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting file data from URI folder: ${e.message}", e)
+            return null
+        }
+    }
+
+    /**
+     * Create a temporary file with original name for sending
+     * This ensures the file name is preserved during transmission
+     */
+    fun createTempFileWithOriginalName(context: Context, originalFileName: String, fileData: ByteArray): File? {
+        try {
+            val tempDir = File(context.cacheDir, "sync_temp_files")
+            tempDir.mkdirs()
+            
+            // Clean up old temp files first
+            tempDir.listFiles()?.forEach { file ->
+                if (file.lastModified() < System.currentTimeMillis() - 3600000) { // 1 hour old
+                    file.delete()
+                }
+            }
+            
+            // Create temp file with original name
+            val tempFile = File(tempDir, originalFileName)
+            
+            // If file already exists, delete it first
+            if (tempFile.exists()) {
+                tempFile.delete()
+            }
+            
+            tempFile.writeBytes(fileData)
+            
+            Log.d(TAG, "Created temp file with original name: ${tempFile.name}")
+            return tempFile
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error creating temp file with original name: ${e.message}", e)
             return null
         }
     }

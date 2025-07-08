@@ -885,46 +885,86 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
             _folderTransferStatus.value = "Scanning folder..."
 
             try {
-                val files = if (sendFolder != null) {
-                    getAllFilesInFolder(sendFolder)
+                val filesToSend = if (sendFolder != null) {
+                    // Handle regular File-based folders
+                    getAllFilesInFolder(sendFolder).map { file ->
+                        Triple(file, file.name, false) // (file, originalName, isDocumentFile)
+                    }
                 } else {
-                    // For URI-based folders, we need to get files differently
-                    getAllFilesInFolderUri(sendFolderUri!!)
+                    // Handle URI-based folders - get SyncFileInfo to preserve original names
+                    val syncFileInfoList = fileMessaging.getFileListFromFolderUri(sendFolderUri!!)
+                    syncFileInfoList.mapNotNull { syncFileInfo ->
+                        val fileData = FolderUtils.getFileDataFromUriFolder(context, sendFolderUri, syncFileInfo.relativePath)
+                        if (fileData != null) {
+                            val tempFile = FolderUtils.createTempFileWithOriginalName(context, syncFileInfo.name, fileData)
+                            if (tempFile != null) {
+                                Triple(tempFile, syncFileInfo.name, true) // (tempFile, originalName, isDocumentFile)
+                            } else null
+                        } else null
+                    }
                 }
                 
-                if (files.isEmpty()) {
+                if (filesToSend.isEmpty()) {
                     _folderTransferStatus.value = "No files found in selected folder"
                     _isFolderTransferring.value = false
                     return@launch
                 }
 
-                _folderTransferStatus.value = "Sending ${files.size} files..."
+                _folderTransferStatus.value = "Sending ${filesToSend.size} files..."
                 
                 var successCount = 0
                 var failCount = 0
 
-                files.forEachIndexed { index, file ->
-                    val progress = ((index + 1) * 100) / files.size
+                filesToSend.forEachIndexed { index, (file, originalName, isDocumentFile) ->
+                    val progress = ((index + 1) * 100) / filesToSend.size
                     _folderTransferProgress.value = mapOf("overall" to progress)
-                    _folderTransferStatus.value = "Sending ${file.name} (${index + 1}/${files.size})"
+                    _folderTransferStatus.value = "Sending $originalName (${index + 1}/${filesToSend.size})"
 
-                    val result = if (connInfo.isGroupOwner) {
-                        fileMessaging.sendFileToAllClients(
-                            file = file,
-                            senderName = currentDevice.deviceName,
-                            senderAddress = currentDevice.deviceAddress
-                        )
-                    } else {
-                        val groupOwnerAddress = connInfo.groupOwnerAddress?.hostAddress
-                        if (groupOwnerAddress != null) {
-                            fileMessaging.sendFile(
-                                file = file,
-                                hostAddress = groupOwnerAddress,
-                                senderName = currentDevice.deviceName,
-                                senderAddress = currentDevice.deviceAddress
-                            )
+                    val result = try {
+                        if (connInfo.isGroupOwner) {
+                            // Use appropriate method based on whether we need to preserve original name
+                            if (isDocumentFile) {
+                                fileMessaging.sendFileToAllClients(
+                                    file = file,
+                                    senderName = currentDevice.deviceName,
+                                    senderAddress = currentDevice.deviceAddress,
+                                    originalFileName = originalName
+                                )
+                            } else {
+                                fileMessaging.sendFileToAllClients(
+                                    file = file,
+                                    senderName = currentDevice.deviceName,
+                                    senderAddress = currentDevice.deviceAddress
+                                )
+                            }
                         } else {
-                            Result.failure(Exception("Group owner address not available"))
+                            val groupOwnerAddress = connInfo.groupOwnerAddress?.hostAddress
+                            if (groupOwnerAddress != null) {
+                                // Use appropriate method based on whether we need to preserve original name
+                                if (isDocumentFile) {
+                                    fileMessaging.sendFile(
+                                        file = file,
+                                        hostAddress = groupOwnerAddress,
+                                        senderName = currentDevice.deviceName,
+                                        senderAddress = currentDevice.deviceAddress,
+                                        originalFileName = originalName
+                                    )
+                                } else {
+                                    fileMessaging.sendFile(
+                                        file = file,
+                                        hostAddress = groupOwnerAddress,
+                                        senderName = currentDevice.deviceName,
+                                        senderAddress = currentDevice.deviceAddress
+                                    )
+                                }
+                            } else {
+                                Result.failure(Exception("Group owner address not available"))
+                            }
+                        }
+                    } finally {
+                        // Clean up temp file if it was created for DocumentFile
+                        if (isDocumentFile) {
+                            file.delete()
                         }
                     }
 
@@ -932,7 +972,7 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
                         successCount++
                     } else {
                         failCount++
-                        Log.w("P2PSyncViewModel", "Failed to send file ${file.name}: ${result.exceptionOrNull()?.message}")
+                        Log.w("P2PSyncViewModel", "Failed to send file $originalName: ${result.exceptionOrNull()?.message}")
                     }
                 }
 
@@ -949,27 +989,6 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
                 _selectedSendFolder.value = null
             }
         }
-    }
-
-    /**
-     * Get all files in a URI-based folder
-     */
-    private fun getAllFilesInFolderUri(folderUri: Uri): List<File> {
-        val fileList = mutableListOf<File>()
-        try {
-            val syncFileInfoList = fileMessaging.getFileListFromFolderUri(folderUri)
-            
-            // Convert SyncFileInfo to File objects by creating temporary files
-            for (syncFileInfo in syncFileInfoList) {
-                val tempFile = FolderUtils.getFileFromUriFolder(context, folderUri, syncFileInfo.relativePath)
-                if (tempFile != null) {
-                    fileList.add(tempFile)
-                }
-            }
-        } catch (e: Exception) {
-            Log.e("P2PSyncViewModel", "Error getting files from URI folder: ${e.message}", e)
-        }
-        return fileList
     }
 
     /**
@@ -1195,38 +1214,81 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
                         continue
                     }
 
-                    val actualFile = if (sendFolder != null) {
-                        File(sendFolder, relativePath)
+                    val (actualFile, originalFileName, isDocumentFile) = if (sendFolder != null) {
+                        val file = File(sendFolder, relativePath)
+                        Triple(file, file.name, false)
                     } else {
-                        // Get file from URI-based folder
-                        FolderUtils.getFileFromUriFolder(context, sendFolderUri!!, relativePath)
+                        // Handle URI-based folder - preserve original filename
+                        val originalFileName = sourceFileInfo.name
+                        val fileData = FolderUtils.getFileDataFromUriFolder(context, sendFolderUri!!, relativePath)
+                        if (fileData != null) {
+                            val tempFile = FolderUtils.createTempFileWithOriginalName(context, originalFileName, fileData)
+                            if (tempFile != null) {
+                                Triple(tempFile, originalFileName, true)
+                            } else {
+                                Log.w("P2PSyncViewModel", "Failed to create temp file for: $relativePath")
+                                failCount++
+                                continue
+                            }
+                        } else {
+                            Log.w("P2PSyncViewModel", "Failed to get file data for: $relativePath")
+                            failCount++
+                            continue
+                        }
                     }
                     
-                    if (actualFile?.exists() != true) {
+                    if (!actualFile.exists()) {
                         Log.w("P2PSyncViewModel", "Actual file not found: $relativePath")
                         failCount++
+                        if (isDocumentFile) actualFile.delete() // Clean up temp file
                         continue
                     }
 
-                    _syncStatus.value = "Syncing ${actualFile.name} (${index + 1}/$totalFiles)"
+                    _syncStatus.value = "Syncing $originalFileName (${index + 1}/$totalFiles)"
 
-                    val result = if (connInfo.isGroupOwner) {
-                        fileMessaging.sendFileToAllClients(
-                            file = actualFile,
-                            senderName = currentDevice.deviceName,
-                            senderAddress = currentDevice.deviceAddress
-                        )
-                    } else {
-                        val groupOwnerAddress = connInfo.groupOwnerAddress?.hostAddress
-                        if (groupOwnerAddress != null) {
-                            fileMessaging.sendFile(
-                                file = actualFile,
-                                hostAddress = groupOwnerAddress,
-                                senderName = currentDevice.deviceName,
-                                senderAddress = currentDevice.deviceAddress
-                            )
+                    val result = try {
+                        if (connInfo.isGroupOwner) {
+                            if (isDocumentFile) {
+                                fileMessaging.sendFileToAllClients(
+                                    file = actualFile,
+                                    senderName = currentDevice.deviceName,
+                                    senderAddress = currentDevice.deviceAddress,
+                                    originalFileName = originalFileName
+                                )
+                            } else {
+                                fileMessaging.sendFileToAllClients(
+                                    file = actualFile,
+                                    senderName = currentDevice.deviceName,
+                                    senderAddress = currentDevice.deviceAddress
+                                )
+                            }
                         } else {
-                            Result.failure(Exception("Group owner address not available"))
+                            val groupOwnerAddress = connInfo.groupOwnerAddress?.hostAddress
+                            if (groupOwnerAddress != null) {
+                                if (isDocumentFile) {
+                                    fileMessaging.sendFile(
+                                        file = actualFile,
+                                        hostAddress = groupOwnerAddress,
+                                        senderName = currentDevice.deviceName,
+                                        senderAddress = currentDevice.deviceAddress,
+                                        originalFileName = originalFileName
+                                    )
+                                } else {
+                                    fileMessaging.sendFile(
+                                        file = actualFile,
+                                        hostAddress = groupOwnerAddress,
+                                        senderName = currentDevice.deviceName,
+                                        senderAddress = currentDevice.deviceAddress
+                                    )
+                                }
+                            } else {
+                                Result.failure(Exception("Group owner address not available"))
+                            }
+                        }
+                    } finally {
+                        // Clean up temp file if it was created for DocumentFile
+                        if (isDocumentFile) {
+                            actualFile.delete()
                         }
                     }
 
@@ -1459,52 +1521,54 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
     }
 
     /**
-     * Send DocumentFile using existing one-way sync functionality
+     * Send DocumentFile using existing one-way sync functionality with original name preserved
      */
     private suspend fun sendDocumentFileUsingOneWaySync(folderUri: Uri, relativePath: String, currentDevice: P2PDevice, connInfo: android.net.wifi.p2p.WifiP2pInfo): Result<Unit> {
         return withContext(Dispatchers.IO) {
             try {
                 if (context == null) return@withContext Result.failure(Exception("Context is null"))
                 
-                val documentFile = DocumentFile.fromTreeUri(context, folderUri)
-                val targetFile = findDocumentFileByPath(documentFile, relativePath)
+                // Get the original filename from the relative path
+                val originalFileName = File(relativePath).name
                 
-                if (targetFile != null) {
-                    // Read file data
-                    val fileData = context.contentResolver.openInputStream(targetFile.uri)?.use { input ->
-                        input.readBytes()
-                    } ?: return@withContext Result.failure(Exception("Failed to read file data"))
-                    
-                    // Get the original filename from the relative path
-                    val originalFileName = File(relativePath).name
-                    
-                    // Create a temporary file with the original name (not prefixed)
-                    val tempFile = File(context.cacheDir, originalFileName)
-                    
-                    // If file already exists, create unique name but keep original extension
-                    val finalTempFile = if (tempFile.exists()) {
-                        val nameWithoutExt = originalFileName.substringBeforeLast(".", originalFileName)
-                        val extension = if (originalFileName.contains(".")) {
-                            ".${originalFileName.substringAfterLast(".")}"
-                        } else {
-                            ""
-                        }
-                        File(context.cacheDir, "${nameWithoutExt}_${System.currentTimeMillis()}${extension}")
+                // Get file data directly without creating problematic temp files
+                val fileData = FolderUtils.getFileDataFromUriFolder(context, folderUri, relativePath)
+                    ?: return@withContext Result.failure(Exception("Failed to read file data"))
+                
+                // Create a temporary file with original name preserved for sending
+                val tempFile = FolderUtils.createTempFileWithOriginalName(context, originalFileName, fileData)
+                    ?: return@withContext Result.failure(Exception("Failed to create temp file"))
+                
+                val result = try {
+                    if (connInfo.isGroupOwner) {
+                        // Use the new overloaded sendFileToAllClients that preserves original name
+                        fileMessaging.sendFileToAllClients(
+                            file = tempFile,
+                            senderName = currentDevice.deviceName,
+                            senderAddress = currentDevice.deviceAddress,
+                            originalFileName = originalFileName
+                        ).map { Unit }
                     } else {
-                        tempFile
+                        val groupOwnerAddress = connInfo.groupOwnerAddress?.hostAddress
+                        if (groupOwnerAddress != null) {
+                            // Use the new overloaded sendFile that preserves original name
+                            fileMessaging.sendFile(
+                                file = tempFile,
+                                hostAddress = groupOwnerAddress,
+                                senderName = currentDevice.deviceName,
+                                senderAddress = currentDevice.deviceAddress,
+                                originalFileName = originalFileName
+                            ).map { Unit }
+                        } else {
+                            Result.failure(Exception("Group owner address not available"))
+                        }
                     }
-                    
-                    finalTempFile.writeBytes(fileData)
-                    
-                    val result = sendFileUsingOneWaySync(finalTempFile, currentDevice, connInfo)
-                    
+                } finally {
                     // Clean up temp file
-                    finalTempFile.delete()
-                    
-                    result
-                } else {
-                    Result.failure(Exception("DocumentFile not found: $relativePath"))
+                    tempFile.delete()
                 }
+                
+                result
             } catch (e: Exception) {
                 Log.e("P2PSyncViewModel", "Error sending DocumentFile: $relativePath", e)
                 Result.failure(e)
@@ -1750,7 +1814,7 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
 
     /**
      * Start two-way sync between Device A and Device B
-     * Device A sends selected files to Device B, then Device B sends its files back to Device A
+     * Both devices actively participate: A sends its files, then B sends its files
      */
     fun startTwoWaySync() {
         val folder = _selectedLocalFolder.value
@@ -1775,7 +1839,7 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
-        _twoWaySyncStatus.value = "Starting sequential two-way sync..."
+        _twoWaySyncStatus.value = "Starting bidirectional sync..."
         _twoWaySyncProgress.value = emptyMap()
         
         viewModelScope.launch {
@@ -1791,31 +1855,34 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
                     fileMessaging.setTwoWaySyncFolderUri(folderUri)
                 }
                 
-                Log.d("P2PSyncViewModel", "Starting two-way sync - filesToSend: ${filesToSend.size}, filesToReceive: ${filesToReceive.size}")
-                Log.d("P2PSyncViewModel", "Two-way sync folder set: ${if (folder != null) folder.absolutePath else folderUri.toString()}")
+                Log.d("P2PSyncViewModel", "Starting bidirectional sync - filesToSend: ${filesToSend.size}, filesToReceive: ${filesToReceive.size}")
                 
-                // Phase 1: Send files from Device A to Device B using one-way sync
+                // Phase 1: Send files to remote device (outgoing)
                 if (filesToSend.isNotEmpty()) {
-                    _twoWaySyncStatus.value = "Phase 1: Sending ${filesToSend.size} files to Device B..."
-                    Log.d("P2PSyncViewModel", "Phase 1: Sending files to remote using one-way sync")
+                    _twoWaySyncStatus.value = "Phase 1: Sending ${filesToSend.size} files..."
+                    Log.d("P2PSyncViewModel", "Phase 1: Sending files to remote device")
                     
-                    // Use one-way sync to send files
                     performOneWaySync(filesToSend, folder, folderUri, true) // true for sending
                     
-                    // Wait for completion
-                    delay(2000)
+                    // Wait for sending to complete
+                    delay(1000)
                 }
                 
-                // Phase 2: Trigger Device B to send files to Device A using one-way sync
+                // Phase 2: Request specific files from remote device (incoming)
                 if (filesToReceive.isNotEmpty()) {
-                    _twoWaySyncStatus.value = "Phase 2: Requesting Device B to send ${filesToReceive.size} files..."
-                    Log.d("P2PSyncViewModel", "Phase 2: Triggering Device B to send files")
+                    _twoWaySyncStatus.value = "Phase 2: Requesting ${filesToReceive.size} files from remote device..."
+                    Log.d("P2PSyncViewModel", "Phase 2: Requesting files from remote device")
                     
-                    // Send signal to Device B to start sending its files to Device A
-                    triggerRemoteDeviceToSend(filesToReceive)
+                    // Extract relative paths from display names
+                    val pathsToRequest = filesToReceive.map { displayName ->
+                        displayToPathMapping[displayName] ?: extractRelativePathFromDisplayName(displayName)
+                    }
                     
-                    // Wait for files to be received
-                    delay(5000)
+                    // Request each file individually from the remote device
+                    requestFilesFromRemoteDevice(pathsToRequest)
+                    
+                    // Wait for receiving to complete
+                    delay(2000)
                 }
                 
                 _twoWaySyncStatus.value = "Two-way sync completed successfully!"
@@ -1899,6 +1966,78 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
         } catch (e: Exception) {
             Log.w("P2PSyncViewModel", "Failed to calculate checksum for DocumentFile: ${e.message}")
             null
+        }
+    }
+
+    /**
+     * Request specific files from remote device for two-way sync
+     */
+    private suspend fun requestFilesFromRemoteDevice(filePaths: List<String>) {
+        withContext(Dispatchers.IO) {
+            try {
+                val connInfo = connectionInfo.value
+                if (connInfo?.groupFormed != true) {
+                    Log.w("P2PSyncViewModel", "No connection available for requesting files")
+                    return@withContext
+                }
+
+                // Get target address for file requests
+                val targetAddress = if (connInfo.isGroupOwner) {
+                    // Get first connected client
+                    val clients = fileMessaging.getAllActiveClientIPs()
+                    if (clients.isEmpty()) {
+                        Log.w("P2PSyncViewModel", "No connected clients found")
+                        return@withContext
+                    }
+                    clients.first()
+                } else {
+                    // Send to group owner
+                    connInfo.groupOwnerAddress?.hostAddress
+                }
+
+                if (targetAddress == null) {
+                    Log.w("P2PSyncViewModel", "Target device address not available")
+                    return@withContext
+                }
+
+                var successCount = 0
+                var failCount = 0
+
+                for ((index, relativePath) in filePaths.withIndex()) {
+                    val progress = ((index + 1) * 100) / filePaths.size
+                    _twoWaySyncProgress.value = mapOf("overall" to progress)
+                    
+                    val fileName = File(relativePath).name
+                    _twoWaySyncStatus.value = "Requesting $fileName (${index + 1}/${filePaths.size})"
+
+                    try {
+                        // Request the specific file from the remote device
+                        val result = fileMessaging.requestTwoWaySyncFile(relativePath, targetAddress)
+                        
+                        if (result.isSuccess) {
+                            val fileData = result.getOrNull()
+                            if (fileData != null) {
+                                // File data received, it will be automatically saved by P2PFileMessaging
+                                successCount++
+                                Log.d("P2PSyncViewModel", "Successfully received file: $relativePath")
+                            } else {
+                                failCount++
+                                Log.w("P2PSyncViewModel", "Received null data for file: $relativePath")
+                            }
+                        } else {
+                            failCount++
+                            Log.w("P2PSyncViewModel", "Failed to request file: $relativePath - ${result.exceptionOrNull()?.message}")
+                        }
+                    } catch (e: Exception) {
+                        failCount++
+                        Log.e("P2PSyncViewModel", "Error requesting file: $relativePath", e)
+                    }
+                }
+
+                Log.d("P2PSyncViewModel", "File requesting completed: $successCount received, $failCount failed")
+            } catch (e: Exception) {
+                Log.e("P2PSyncViewModel", "Error in requestFilesFromRemoteDevice", e)
+            }
         }
     }
 }
