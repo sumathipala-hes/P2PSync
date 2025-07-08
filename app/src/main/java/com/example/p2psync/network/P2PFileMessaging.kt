@@ -2,6 +2,10 @@ package com.example.p2psync.network
 
 import android.util.Log
 import android.net.Uri
+import android.media.MediaScannerConnection
+import android.content.Context
+import android.content.Intent
+import android.webkit.MimeTypeMap
 import androidx.documentfile.provider.DocumentFile
 import com.example.p2psync.data.FileMessage
 import kotlinx.coroutines.*
@@ -20,7 +24,6 @@ import java.util.concurrent.ConcurrentHashMap
 data class SyncFileInfo(
     val name: String,
     val size: Long,
-    val lastModified: Long,
     val relativePath: String,
     val checksum: String? = null
 )
@@ -52,6 +55,9 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
         private const val FILE_LIST_REQUEST = "FILE_LIST_REQUEST"
         private const val FILE_LIST_RESPONSE = "FILE_LIST_RESPONSE"
         private const val SYNC_START = "SYNC_START"
+        private const val TRIGGER_SYNC_MESSAGE = "TRIGGER_SYNC"
+        private const val TWOWAY_SYNC_FOLDER_REQUEST = "TWOWAY_SYNC_FOLDER_REQUEST"
+        private const val TWOWAY_SYNC_FOLDER_RESPONSE = "TWOWAY_SYNC_FOLDER_RESPONSE"
         private const val KEEP_ALIVE_INTERVAL = 30000L
     }
 
@@ -73,6 +79,10 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
     // Receive directory state
     private var customReceiveDirectory: File? = null
     private var customReceiveDirectoryUri: Uri? = null
+
+    // Two-way sync folder selection
+    private var twoWaySyncFolder: File? = null
+    private var twoWaySyncFolderUri: Uri? = null
 
     // Sync-related state
     private val _syncProgress = MutableStateFlow<Map<String, Int>>(emptyMap())
@@ -318,6 +328,138 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
                         continue
                     }
 
+                    if (metadataString == TRIGGER_SYNC_MESSAGE) {
+                        Log.d(TAG, "Received TRIGGER_SYNC from $clientAddress")
+                        // Remote device is requesting this device to start sending files
+                        // Send acknowledgment back
+                        try {
+                            outputStream.write("TRIGGER_ACK\n".toByteArray())
+                            outputStream.flush()
+                            Log.d(TAG, "Sent TRIGGER_ACK to $clientAddress")
+                            
+                            // TODO: Implement automatic sync start
+                            // This is where we would trigger the local device to start its one-way sync
+                            // For now, this is just a placeholder for future implementation
+                            Log.d(TAG, "Trigger sync request acknowledged - manual sync start required")
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to send TRIGGER_ACK: ${e.message}")
+                        }
+                        continue
+                    }
+
+                    if (metadataString == TWOWAY_SYNC_FOLDER_REQUEST) {
+                        Log.d(TAG, "Received TWOWAY_SYNC_FOLDER_REQUEST from $clientAddress")
+                        try {
+                            // Get file list from selected two-way sync folder
+                            val fileList = if (twoWaySyncFolderUri != null && context != null) {
+                                getFileListFromFolderUri(twoWaySyncFolderUri!!)
+                            } else if (twoWaySyncFolder != null) {
+                                getFileListFromFolder(twoWaySyncFolder!!)
+                            } else {
+                                Log.w(TAG, "No two-way sync folder selected, returning empty list")
+                                emptyList()
+                            }
+                            
+                            // Convert to JSON and send response
+                            val fileListJson = fileListToJson(fileList)
+                            val responseMessage = "$TWOWAY_SYNC_FOLDER_RESPONSE$METADATA_SEPARATOR$fileListJson"
+                            val responseBytes = responseMessage.toByteArray(Charsets.UTF_8)
+                            
+                            // Send response length first
+                            val lengthBuffer = java.nio.ByteBuffer.allocate(4).putInt(responseBytes.size).array()
+                            outputStream.write(lengthBuffer)
+                            outputStream.write(responseBytes)
+                            outputStream.flush()
+                            
+                            Log.d(TAG, "Sent two-way sync folder list response with ${fileList.size} files")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to send two-way sync folder list response: ${e.message}")
+                        }
+                        continue
+                    }
+
+                    // Handle two-way sync folder listing request
+                    if (metadataString == "REQUEST_FOLDER_LISTING") {
+                        Log.d(TAG, "Received REQUEST_FOLDER_LISTING from $clientAddress")
+                        try {
+                            val folderFiles = getTwoWaySyncFolderFiles()
+                            Log.d(TAG, "Two-way sync folder files count: ${folderFiles.size}")
+                            
+                            outputStream.write("FOLDER_LISTING_START\n".toByteArray())
+                            
+                            folderFiles.forEach { fileInfo ->
+                                val fileLine = "${fileInfo.name}$METADATA_SEPARATOR${fileInfo.size}$METADATA_SEPARATOR${fileInfo.relativePath}\n"
+                                outputStream.write(fileLine.toByteArray())
+                                Log.d(TAG, "Sending file info: ${fileInfo.name} (${fileInfo.relativePath})")
+                            }
+                            
+                            outputStream.write("FOLDER_LISTING_END\n".toByteArray())
+                            outputStream.flush()
+                            
+                            Log.d(TAG, "Sent folder listing with ${folderFiles.size} files")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to send folder listing: ${e.message}")
+                        }
+                        continue
+                    }
+
+                    // Handle two-way sync file request
+                    if (metadataString.startsWith("REQUEST_TWOWAY_SYNC_FILE")) {
+                        Log.d(TAG, "Received REQUEST_TWOWAY_SYNC_FILE from $clientAddress")
+                        try {
+                            val parts = metadataString.split(METADATA_SEPARATOR)
+                            if (parts.size >= 2) {
+                                val relativePath = parts[1]
+                                val fileData = getTwoWaySyncFile(relativePath)
+                                
+                                if (fileData != null) {
+                                    val response = "TWOWAY_SYNC_FILE_RESPONSE$METADATA_SEPARATOR${fileData.size}\n"
+                                    outputStream.write(response.toByteArray())
+                                    outputStream.write(fileData)
+                                    outputStream.flush()
+                                    
+                                    Log.d(TAG, "Sent two-way sync file: $relativePath")
+                                } else {
+                                    outputStream.write("TWOWAY_SYNC_FILE_ERROR\n".toByteArray())
+                                    outputStream.flush()
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to send two-way sync file: ${e.message}")
+                        }
+                        continue
+                    }
+
+                    // Handle two-way sync file receive
+                    if (metadataString.startsWith("TWOWAY_SYNC_FILE")) {
+                        Log.d(TAG, "Received TWOWAY_SYNC_FILE from $clientAddress")
+                        try {
+                            val parts = metadataString.split(METADATA_SEPARATOR)
+                            if (parts.size >= 3) {
+                                val relativePath = parts[1]
+                                val fileSize = parts[2].toLongOrNull() ?: 0L
+                                
+                                // Read file content
+                                val fileData = ByteArray(fileSize.toInt())
+                                var totalRead = 0
+                                
+                                while (totalRead < fileSize) {
+                                    val bytesRead = inputStream.read(fileData, totalRead, (fileSize - totalRead).toInt())
+                                    if (bytesRead == -1) break
+                                    totalRead += bytesRead
+                                }
+                                
+                                // Save the file
+                                saveTwoWaySyncFile(relativePath, fileData)
+                                
+                                Log.d(TAG, "Received and saved two-way sync file: $relativePath")
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to receive two-way sync file: ${e.message}")
+                        }
+                        continue
+                    }
+
                     val metadata = metadataString.split(METADATA_SEPARATOR)
                     if (metadata.size >= 5) {
                         val fileName = metadata[0]
@@ -448,57 +590,154 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
      */
     private suspend fun receiveFileData(inputStream: InputStream, fileName: String, fileSize: Long, messageId: String): File? = withContext(Dispatchers.IO) {
         try {
+            Log.d(TAG, "receiveFileData called for: $fileName")
+            Log.d(TAG, "Two-way sync folder: ${twoWaySyncFolder?.absolutePath}")
+            Log.d(TAG, "Two-way sync folder URI: $twoWaySyncFolderUri")
+            Log.d(TAG, "Custom receive directory URI: $customReceiveDirectoryUri")
+            
+            // Check if we have a two-way sync folder first (highest priority)
+            if (twoWaySyncFolderUri != null && context != null) {
+                Log.d(TAG, "Using two-way sync folder URI for receiving file: $fileName")
+                return@withContext receiveFileWithDualSave(inputStream, fileName, fileSize, messageId, 
+                    targetUri = twoWaySyncFolderUri!!, targetFolder = null)
+            } else if (twoWaySyncFolder != null) {
+                Log.d(TAG, "Using two-way sync folder for receiving file: $fileName")
+                return@withContext receiveFileWithDualSave(inputStream, fileName, fileSize, messageId, 
+                    targetUri = null, targetFolder = twoWaySyncFolder!!)
+            }
+            
             // Check if we have a custom URI for receiving (folder sharing)
             val customUri = getCurrentReceiveDirectoryUri()
             
             if (customUri != null && context != null) {
-                // Use Storage Access Framework for custom folder
-                return@withContext receiveFileToCustomUri(inputStream, fileName, fileSize, messageId, customUri)
+                Log.d(TAG, "Using custom receive folder for file: $fileName")
+                return@withContext receiveFileWithDualSave(inputStream, fileName, fileSize, messageId, 
+                    targetUri = customUri, targetFolder = null)
             } else {
+                Log.d(TAG, "Using default receive directory for file: $fileName")
                 // Use traditional file system approach
                 val receiveDir = getCurrentReceiveDirectory()
-                val receivedFile = File(receiveDir, fileName)
-                
-                Log.d(TAG, "Starting to receive file: $fileName, size: $fileSize bytes, to: ${receivedFile.absolutePath}")
-                
-                FileOutputStream(receivedFile).use { fileOutputStream ->
-                    val buffer = ByteArray(BUFFER_SIZE)
-                    var bytesReceived = 0L
-                    var bytesRead: Int
-
-                    while (bytesReceived < fileSize) {
-                        val remainingBytes = (fileSize - bytesReceived).toInt()
-                        val bytesToRead = minOf(buffer.size, remainingBytes)
-                        
-                        bytesRead = inputStream.read(buffer, 0, bytesToRead)
-                        if (bytesRead == -1) {
-                            Log.w(TAG, "Unexpected end of stream at $bytesReceived/$fileSize bytes")
-                            break
-                        }
-                        
-                        fileOutputStream.write(buffer, 0, bytesRead)
-                        bytesReceived += bytesRead
-
-                        val progress = ((bytesReceived * 100) / fileSize).toInt()
-                        updateTransferProgress(messageId, progress)
-                        
-                        if (bytesReceived % (BUFFER_SIZE * 10) == 0L || bytesReceived == fileSize) {
-                            Log.v(TAG, "Received $bytesReceived/$fileSize bytes ($progress%)")
-                        }
-                    }
-                }
-
-                if (receivedFile.length() == fileSize) {
-                    Log.d(TAG, "File received successfully: $fileName at ${receivedFile.absolutePath}")
-                    receivedFile
-                } else {
-                    Log.e(TAG, "File size mismatch. Expected: $fileSize, Actual: ${receivedFile.length()}")
-                    receivedFile.delete()
-                    null
-                }
+                return@withContext receiveFileWithDualSave(inputStream, fileName, fileSize, messageId, 
+                    targetUri = null, targetFolder = receiveDir)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error receiving file data: ${e.message}", e)
+            null
+        }
+    }
+    
+    /**
+     * Receive file and save to both target location and cache directory for dual availability
+     */
+    private suspend fun receiveFileWithDualSave(
+        inputStream: InputStream, 
+        fileName: String, 
+        fileSize: Long, 
+        messageId: String,
+        targetUri: Uri?,
+        targetFolder: File?
+    ): File? = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "receiveFileWithDualSave called for: $fileName")
+            Log.d(TAG, "Target URI: $targetUri, Target Folder: ${targetFolder?.absolutePath}")
+            
+            // Always create a cache file for immediate access
+            val cacheFile = File(context?.cacheDir ?: File("/tmp"), fileName)
+            cacheFile.parentFile?.mkdirs()
+            
+            // Buffer for reading data
+            val buffer = ByteArray(BUFFER_SIZE)
+            var bytesReceived = 0L
+            var bytesRead: Int
+            
+            // Read all data into cache file first
+            Log.d(TAG, "Saving to cache: ${cacheFile.absolutePath}")
+            FileOutputStream(cacheFile).use { cacheOutputStream ->
+                while (bytesReceived < fileSize) {
+                    val remainingBytes = (fileSize - bytesReceived).toInt()
+                    val bytesToRead = minOf(buffer.size, remainingBytes)
+                    
+                    bytesRead = inputStream.read(buffer, 0, bytesToRead)
+                    if (bytesRead == -1) {
+                        Log.w(TAG, "Unexpected end of stream at $bytesReceived/$fileSize bytes")
+                        break
+                    }
+                    
+                    cacheOutputStream.write(buffer, 0, bytesRead)
+                    bytesReceived += bytesRead
+
+                    val progress = ((bytesReceived * 100) / fileSize).toInt()
+                    updateTransferProgress(messageId, progress)
+                    
+                    if (bytesReceived % (BUFFER_SIZE * 10) == 0L || bytesReceived == fileSize) {
+                        Log.v(TAG, "Received $bytesReceived/$fileSize bytes ($progress%)")
+                    }
+                }
+            }
+
+            // Verify cache file was written correctly
+            if (cacheFile.length() != fileSize) {
+                Log.e(TAG, "Cache file size mismatch. Expected: $fileSize, Actual: ${cacheFile.length()}")
+                cacheFile.delete()
+                return@withContext null
+            }
+            
+            Log.d(TAG, "File successfully saved to cache: ${cacheFile.absolutePath}")
+            
+            // Now copy from cache to target location
+            var targetFile: File? = null
+            
+            if (targetUri != null && context != null) {
+                // Copy to target URI using Storage Access Framework
+                try {
+                    val documentFile = DocumentFile.fromTreeUri(context, targetUri)
+                    if (documentFile != null && documentFile.canWrite()) {
+                        val mimeType = getMimeType(fileName) // Use proper MIME type
+                        val newFile = documentFile.createFile(mimeType, fileName)
+                        if (newFile != null) {
+                            context.contentResolver.openOutputStream(newFile.uri)?.use { targetOutputStream ->
+                                FileInputStream(cacheFile).use { cacheInputStream ->
+                                    cacheInputStream.copyTo(targetOutputStream)
+                                }
+                            }
+                            Log.d(TAG, "File copied to target URI: ${newFile.uri} with MIME type: $mimeType")
+                            targetFile = File(getDisplayPathFromUri(newFile.uri), fileName)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to copy to target URI: ${e.message}")
+                }
+            } else if (targetFolder != null) {
+                // Copy to target folder using traditional file system
+                try {
+                    targetFile = File(targetFolder, fileName)
+                    targetFile.parentFile?.mkdirs()
+                    
+                    FileInputStream(cacheFile).use { cacheInputStream ->
+                        FileOutputStream(targetFile).use { targetOutputStream ->
+                            cacheInputStream.copyTo(targetOutputStream)
+                        }
+                    }
+                    
+                    // Set proper permissions and scan for media store
+                    setFilePermissions(targetFile)
+                    scanFileForMediaStore(targetFile)
+                    
+                    Log.d(TAG, "File copied to target folder: ${targetFile.absolutePath}")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to copy to target folder: ${e.message}")
+                    targetFile = null
+                }
+            }
+            
+            // Return the target file if copy was successful, otherwise return cache file
+            val resultFile = targetFile ?: cacheFile
+            Log.d(TAG, "File received and saved. Primary location: ${resultFile.absolutePath}, Cache: ${cacheFile.absolutePath}")
+            
+            return@withContext resultFile
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in receiveFileWithDualSave: ${e.message}", e)
             null
         }
     }
@@ -519,57 +758,53 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
                 return@withContext null
             }
 
-            val documentFile = DocumentFile.fromTreeUri(context, folderUri)
-            if (documentFile == null || !documentFile.canWrite()) {
-                Log.e(TAG, "Cannot write to folder URI: $folderUri")
-                return@withContext null
-            }
-
-            // Create the file in the selected folder
-            val newFile = documentFile.createFile("application/octet-stream", fileName)
-            if (newFile == null) {
-                Log.e(TAG, "Failed to create file in selected folder: $fileName")
-                return@withContext null
-            }
-
-            Log.d(TAG, "Receiving file to custom folder: $fileName, size: $fileSize bytes")
-            
-            // Write the file content using SAF
-            context.contentResolver.openOutputStream(newFile.uri)?.use { outputStream ->
-                val buffer = ByteArray(BUFFER_SIZE)
-                var bytesReceived = 0L
-                var bytesRead: Int
-
-                while (bytesReceived < fileSize) {
-                    val remainingBytes = (fileSize - bytesReceived).toInt()
-                    val bytesToRead = minOf(buffer.size, remainingBytes)
-                    
-                    bytesRead = inputStream.read(buffer, 0, bytesToRead)
-                    if (bytesRead == -1) {
-                        Log.w(TAG, "Unexpected end of stream at $bytesReceived/$fileSize bytes")
-                        break
-                    }
-                    
-                    outputStream.write(buffer, 0, bytesRead)
-                    bytesReceived += bytesRead
-
-                    val progress = ((bytesReceived * 100) / fileSize).toInt()
-                    updateTransferProgress(messageId, progress)
-                    
-                    if (bytesReceived % (BUFFER_SIZE * 10) == 0L || bytesReceived == fileSize) {
-                        Log.v(TAG, "Received $bytesReceived/$fileSize bytes ($progress%)")
-                    }
-                }
-            }
-
-            // Create a File object for display purposes (path won't be accessible but needed for FileMessage)
-            val displayFile = File(getDisplayPathFromUri(newFile.uri), fileName)
-            
-            Log.d(TAG, "File received successfully to custom folder: $fileName")
-            return@withContext displayFile
+            Log.d(TAG, "Receiving file with dual save to custom URI: $folderUri")
+            return@withContext receiveFileWithDualSave(inputStream, fileName, fileSize, messageId, 
+                targetUri = folderUri, targetFolder = null)
             
         } catch (e: Exception) {
             Log.e(TAG, "Error receiving file to custom URI: ${e.message}", e)
+            null
+        }
+    }
+
+    /**
+     * Receive file data for two-way sync (saves to selected sync folder)
+     */
+    private suspend fun receiveTwoWaySyncFileData(inputStream: InputStream, fileName: String, fileSize: Long, messageId: String): File? = withContext(Dispatchers.IO) {
+        try {
+            // Use two-way sync folder and also save to cache
+            if (twoWaySyncFolderUri != null && context != null) {
+                Log.d(TAG, "Receiving two-way sync file data with dual save to URI")
+                return@withContext receiveFileWithDualSave(inputStream, fileName, fileSize, messageId, 
+                    targetUri = twoWaySyncFolderUri!!, targetFolder = null)
+            } else if (twoWaySyncFolder != null) {
+                Log.d(TAG, "Receiving two-way sync file data with dual save to folder")
+                return@withContext receiveFileWithDualSave(inputStream, fileName, fileSize, messageId, 
+                    targetUri = null, targetFolder = twoWaySyncFolder!!)
+            } else {
+                Log.w(TAG, "No two-way sync folder selected, falling back to regular receive directory")
+                return@withContext receiveFileData(inputStream, fileName, fileSize, messageId)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error receiving two-way sync file: ${e.message}", e)
+            null
+        }
+    }
+
+    /**
+     * Receive file to two-way sync folder using Storage Access Framework
+     */
+    private suspend fun receiveFileToTwoWaySyncUri(inputStream: InputStream, fileName: String, fileSize: Long, messageId: String, folderUri: Uri): File? = withContext(Dispatchers.IO) {
+        try {
+            if (context == null) return@withContext null
+            
+            Log.d(TAG, "Receiving two-way sync file with dual save to URI: $folderUri")
+            return@withContext receiveFileWithDualSave(inputStream, fileName, fileSize, messageId, 
+                targetUri = folderUri, targetFolder = null)
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error receiving file to two-way sync URI: ${e.message}", e)
             null
         }
     }
@@ -634,20 +869,57 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
      */
     private fun getMimeType(fileName: String): String {
         val extension = fileName.substringAfterLast('.', "").lowercase()
-        return when (extension) {
+        Log.d(TAG, "getMimeType: File '$fileName' has extension '$extension'")
+        
+        // First try our custom mapping for common types
+        val customMimeType = when (extension) {
             "txt" -> "text/plain"
             "pdf" -> "application/pdf"
             "jpg", "jpeg" -> "image/jpeg"
             "png" -> "image/png"
             "gif" -> "image/gif"
+            "bmp" -> "image/bmp"
+            "webp" -> "image/webp"
+            "svg" -> "image/svg+xml"
             "mp4" -> "video/mp4"
+            "avi" -> "video/x-msvideo"
+            "mov" -> "video/quicktime"
+            "wmv" -> "video/x-ms-wmv"
+            "flv" -> "video/x-flv"
+            "webm" -> "video/webm"
             "mp3" -> "audio/mpeg"
-            "doc", "docx" -> "application/msword"
-            "xls", "xlsx" -> "application/vnd.ms-excel"
-            "ppt", "pptx" -> "application/vnd.ms-powerpoint"
+            "wav" -> "audio/wav"
+            "flac" -> "audio/flac"
+            "aac" -> "audio/aac"
+            "ogg" -> "audio/ogg"
+            "doc" -> "application/msword"
+            "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            "xls" -> "application/vnd.ms-excel"
+            "xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            "ppt" -> "application/vnd.ms-powerpoint"
+            "pptx" -> "application/vnd.openxmlformats-officedocument.presentationml.presentation"
             "zip" -> "application/zip"
-            else -> "application/octet-stream"
+            "rar" -> "application/vnd.rar"
+            "7z" -> "application/x-7z-compressed"
+            "tar" -> "application/x-tar"
+            "gz" -> "application/gzip"
+            "json" -> "application/json"
+            "xml" -> "application/xml"
+            "html", "htm" -> "text/html"
+            "css" -> "text/css"
+            "js" -> "application/javascript"
+            "apk" -> "application/vnd.android.package-archive"
+            else -> null
         }
+        
+        // If custom mapping didn't find anything, try Android's MimeTypeMap
+        val mimeType = customMimeType ?: run {
+            val androidMimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
+            androidMimeType ?: "application/octet-stream"
+        }
+        
+        Log.d(TAG, "getMimeType: Detected MIME type '$mimeType' for file '$fileName' (extension: '$extension')")
+        return mimeType
     }
 
     /**
@@ -745,6 +1017,22 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
     }
 
     /**
+     * Set folder for two-way sync (File-based)
+     */
+    fun setTwoWaySyncFolder(folder: File?) {
+        twoWaySyncFolder = folder
+        Log.d(TAG, "Two-way sync folder set to: ${folder?.absolutePath ?: "null"}")
+    }
+
+    /**
+     * Set folder for two-way sync (URI-based)
+     */
+    fun setTwoWaySyncFolderUri(uri: Uri?) {
+        twoWaySyncFolderUri = uri
+        Log.d(TAG, "Two-way sync folder URI set to: ${uri?.toString() ?: "null"}")
+    }
+
+    /**
      * Get appropriate directory for storing received files
      */
     private fun getReceiveDirectory(): File {
@@ -795,9 +1083,33 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
     
     private fun getDisplayPath(filePath: String): String {
         return when {
+            // Check if this is in a two-way sync folder
+            twoWaySyncFolder != null && filePath.startsWith(twoWaySyncFolder!!.absolutePath) -> {
+                val relativePath = filePath.removePrefix(twoWaySyncFolder!!.absolutePath).removePrefix("/")
+                if (relativePath.isEmpty()) {
+                    "Two-Way Sync: ${twoWaySyncFolder!!.name}/"
+                } else {
+                    val pathParts = relativePath.split("/").dropLast(1) // Remove filename
+                    if (pathParts.isNotEmpty() && pathParts.first().isNotEmpty()) {
+                        "Two-Way Sync: ${twoWaySyncFolder!!.name}/${pathParts.joinToString("/")}/"
+                    } else {
+                        "Two-Way Sync: ${twoWaySyncFolder!!.name}/"
+                    }
+                }
+            }
             // Check if this is a custom folder URI path (from SAF)
             customReceiveDirectoryUri != null -> {
                 getAbsolutePathFromUri(customReceiveDirectoryUri!!) + "/"
+            }
+            // Check if this is in a two-way sync URI folder 
+            twoWaySyncFolderUri != null -> {
+                try {
+                    val documentFile = context?.let { DocumentFile.fromTreeUri(it, twoWaySyncFolderUri!!) }
+                    val folderName = documentFile?.name ?: "Selected Folder"
+                    "Two-Way Sync: $folderName/"
+                } catch (e: Exception) {
+                    "Two-Way Sync Folder/"
+                }
             }
             filePath.contains("/storage/emulated/0/Download/P2PSync") -> 
                 "Downloads/P2PSync/"
@@ -1068,6 +1380,55 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
         }
     }
 
+    /**
+     * Send a trigger message to instruct the remote device to start sending files
+     * This is used in two-way sync to trigger the second device to begin its one-way sync
+     */
+    suspend fun sendTriggerMessage(groupOwnerAddress: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "Sending TRIGGER_SYNC to device: $groupOwnerAddress")
+            
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress(groupOwnerAddress, FILE_PORT), CONNECTION_TIMEOUT)
+                Log.d(TAG, "Connected to device for TRIGGER_SYNC")
+                
+                val outputStream = socket.getOutputStream()
+                val inputStream = socket.getInputStream()
+                
+                // Send TRIGGER_SYNC message
+                val triggerMessage = TRIGGER_SYNC_MESSAGE
+                val messageBytes = triggerMessage.toByteArray(Charsets.UTF_8)
+                
+                // Send message length first (4 bytes)
+                val lengthBuffer = java.nio.ByteBuffer.allocate(4).putInt(messageBytes.size).array()
+                outputStream.write(lengthBuffer)
+                
+                // Send trigger message
+                outputStream.write(messageBytes)
+                outputStream.flush()
+                
+                Log.d(TAG, "TRIGGER_SYNC sent, waiting for acknowledgment...")
+                
+                // Wait for acknowledgment
+                val reader = BufferedReader(InputStreamReader(inputStream))
+                val ack = reader.readLine()
+                
+                Log.d(TAG, "Received acknowledgment: $ack")
+                
+                if (ack == "TRIGGER_ACK") {
+                    Log.d(TAG, "TRIGGER_SYNC successfully acknowledged")
+                    Result.success(Unit)
+                } else {
+                    Log.w(TAG, "Unexpected acknowledgment: $ack")
+                    Result.success(Unit) // Still consider it success
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error sending TRIGGER_SYNC: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
     // Folder Synchronization Methods
 
     /**
@@ -1089,7 +1450,6 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
                         SyncFileInfo(
                             name = file.name,
                             size = file.length(),
-                            lastModified = file.lastModified(),
                             relativePath = relativePath
                         )
                     )
@@ -1150,7 +1510,6 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
                         SyncFileInfo(
                             name = fileName,
                             size = file.length(),
-                            lastModified = file.lastModified(),
                             relativePath = fullRelativePath
                         )
                     )
@@ -1234,6 +1593,70 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
     }
 
     /**
+     * Request file list from remote device's selected two-way sync folder
+     */
+    suspend fun requestTwoWaySyncFolderFiles(hostAddress: String): Result<List<SyncFileInfo>> = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "Requesting two-way sync folder files from $hostAddress")
+            
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress(hostAddress, FILE_PORT), CONNECTION_TIMEOUT)
+                
+                val outputStream = socket.getOutputStream()
+                val inputStream = socket.getInputStream()
+                
+                // Send two-way sync folder request
+                val requestMessage = TWOWAY_SYNC_FOLDER_REQUEST
+                val requestBytes = requestMessage.toByteArray(Charsets.UTF_8)
+                
+                // Send request length first
+                val lengthBuffer = java.nio.ByteBuffer.allocate(4).putInt(requestBytes.size).array()
+                outputStream.write(lengthBuffer)
+                outputStream.write(requestBytes)
+                outputStream.flush()
+                
+                Log.d(TAG, "Sent two-way sync folder request")
+                
+                // Read response
+                val responseLengthBuffer = ByteArray(4)
+                val lengthBytesRead = inputStream.read(responseLengthBuffer)
+                if (lengthBytesRead != 4) {
+                    throw Exception("Could not read response length")
+                }
+                
+                val responseLength = java.nio.ByteBuffer.wrap(responseLengthBuffer).int
+                if (responseLength <= 0 || responseLength > 1024000) { // Max 1MB for file list
+                    throw Exception("Invalid response length: $responseLength")
+                }
+                
+                // Read response data
+                val responseBuffer = ByteArray(responseLength)
+                var totalRead = 0
+                while (totalRead < responseLength) {
+                    val bytesRead = inputStream.read(responseBuffer, totalRead, responseLength - totalRead)
+                    if (bytesRead == -1) break
+                    totalRead += bytesRead
+                }
+                
+                val responseString = String(responseBuffer, Charsets.UTF_8)
+                Log.d(TAG, "Received two-way sync folder response: ${responseString.length} characters")
+                
+                // Parse response
+                if (responseString.startsWith(TWOWAY_SYNC_FOLDER_RESPONSE)) {
+                    val fileListJson = responseString.substringAfter("$TWOWAY_SYNC_FOLDER_RESPONSE$METADATA_SEPARATOR")
+                    val fileList = parseFileListFromJson(fileListJson)
+                    Result.success(fileList)
+                } else {
+                    throw Exception("Invalid response format")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error requesting two-way sync folder files from remote: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Compare two file lists and return files that need to be synced
      * Comparison is based on file name (relative path) and size only
      */
@@ -1266,18 +1689,17 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
         val fileList = mutableListOf<SyncFileInfo>()
         
         try {
-            // Simple parsing - each line is: name|size|lastModified|relativePath
+            // Simple parsing - each line is: name|size|relativePath
             val lines = json.split("\n").filter { it.isNotBlank() }
             
             for (line in lines) {
                 val parts = line.split("|")
-                if (parts.size >= 4) {
+                if (parts.size >= 3) {
                     fileList.add(
                         SyncFileInfo(
                             name = parts[0],
                             size = parts[1].toLongOrNull() ?: 0L,
-                            lastModified = parts[2].toLongOrNull() ?: 0L,
-                            relativePath = parts[3]
+                            relativePath = parts[2]
                         )
                     )
                 }
@@ -1294,7 +1716,7 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
      */
     private fun fileListToJson(fileList: List<SyncFileInfo>): String {
         return fileList.joinToString("\n") { file ->
-            "${file.name}|${file.size}|${file.lastModified}|${file.relativePath}"
+            "${file.name}|${file.size}|${file.relativePath}"
         }
     }
 
@@ -1320,5 +1742,493 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
      */
     fun setSyncingState(isSyncing: Boolean) {
         _isSyncing.value = isSyncing
+    }
+
+    /**
+     * Request remote folder listing for two-way sync
+     */
+    suspend fun requestRemoteFolderListing(): Result<List<SyncFileInfo>> = withContext(Dispatchers.IO) {
+        try {
+            val connectedClient = activeConnections.values.firstOrNull()
+            if (connectedClient == null) {
+                return@withContext Result.failure(Exception("No connected client"))
+            }
+
+            val output = connectedClient.getOutputStream()
+            val input = connectedClient.getInputStream()
+
+            // Send request for folder listing
+            Log.d(TAG, "Sending REQUEST_FOLDER_LISTING to remote")
+            output.write("REQUEST_FOLDER_LISTING\n".toByteArray())
+            output.flush()
+
+            // Read response
+            val reader = input.bufferedReader()
+            val response = reader.readLine()
+            Log.d(TAG, "Remote response: $response")
+            if (response == "FOLDER_LISTING_START") {
+                val files = mutableListOf<SyncFileInfo>()
+                
+                var line: String?
+                while (reader.readLine().also { line = it } != null) {
+                    if (line == "FOLDER_LISTING_END") {
+                        Log.d(TAG, "Received FOLDER_LISTING_END")
+                        break
+                    }
+                    
+                    line?.let { fileLine ->
+                        Log.d(TAG, "Received file line: $fileLine")
+                        val parts = fileLine.split(METADATA_SEPARATOR)
+                        if (parts.size >= 3) {
+                            val fileInfo = SyncFileInfo(
+                                name = parts[0],
+                                size = parts[1].toLongOrNull() ?: 0L,
+                                relativePath = parts[2]
+                            )
+                            files.add(fileInfo)
+                            Log.d(TAG, "Added file: ${fileInfo.name} (${fileInfo.relativePath})")
+                        }
+                    }
+                }
+                
+                Log.d(TAG, "Total files received: ${files.size}")
+                Result.success(files)
+            } else {
+                Result.failure(Exception("Invalid response from remote"))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error requesting remote folder listing", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Send a file for two-way sync
+     */
+    suspend fun sendTwoWaySyncFile(file: File, relativePath: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val connectedClient = activeConnections.values.firstOrNull()
+            if (connectedClient == null) {
+                return@withContext Result.failure(Exception("No connected client"))
+            }
+
+            val output = connectedClient.getOutputStream()
+            
+            // Send file header
+            val header = "TWOWAY_SYNC_FILE${METADATA_SEPARATOR}${relativePath}${METADATA_SEPARATOR}${file.length()}\n"
+            output.write(header.toByteArray())
+            output.flush()
+
+            // Send file content
+            file.inputStream().use { fileInput ->
+                val buffer = ByteArray(BUFFER_SIZE)
+                var bytesRead: Int
+                while (fileInput.read(buffer).also { bytesRead = it } != -1) {
+                    output.write(buffer, 0, bytesRead)
+                }
+            }
+            output.flush()
+
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error sending two-way sync file: $relativePath", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Send file data for two-way sync (for DocumentFile-based folders)
+     */
+    suspend fun sendTwoWaySyncFileData(fileData: ByteArray, relativePath: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val connectedClient = activeConnections.values.firstOrNull()
+            if (connectedClient == null) {
+                return@withContext Result.failure(Exception("No connected client"))
+            }
+
+            val output = connectedClient.getOutputStream()
+            
+            // Send file header
+            val header = "TWOWAY_SYNC_FILE${METADATA_SEPARATOR}${relativePath}${METADATA_SEPARATOR}${fileData.size}\n"
+            output.write(header.toByteArray())
+            output.flush()
+
+            // Send file content
+            output.write(fileData)
+            output.flush()
+
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error sending two-way sync file data: $relativePath", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Request a file for two-way sync
+     */
+    suspend fun requestTwoWaySyncFile(relativePath: String): Result<ByteArray> = withContext(Dispatchers.IO) {
+        try {
+            val connectedClient = activeConnections.values.firstOrNull()
+            if (connectedClient == null) {
+                return@withContext Result.failure(Exception("No connected client"))
+            }
+
+            val output = connectedClient.getOutputStream()
+            val input = connectedClient.getInputStream()
+
+            // Send request for specific file
+            output.write("REQUEST_TWOWAY_SYNC_FILE${METADATA_SEPARATOR}$relativePath\n".toByteArray())
+            output.flush()
+
+            // Read response header
+            val response = input.bufferedReader().readLine()
+            if (response?.startsWith("TWOWAY_SYNC_FILE_RESPONSE") == true) {
+                val parts = response.split(METADATA_SEPARATOR)
+                if (parts.size >= 2) {
+                    val fileSize = parts[1].toLongOrNull() ?: 0L
+                    
+                    // Read file content
+                    val fileData = ByteArray(fileSize.toInt())
+                    var totalRead = 0
+                    
+                    while (totalRead < fileSize) {
+                        val bytesRead = input.read(fileData, totalRead, (fileSize - totalRead).toInt())
+                        if (bytesRead == -1) break
+                        totalRead += bytesRead
+                    }
+                    
+                    Result.success(fileData)
+                } else {
+                    Result.failure(Exception("Invalid file response format"))
+                }
+            } else {
+                Result.failure(Exception("File not found or error on remote"))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error requesting two-way sync file: $relativePath", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Get folder files for two-way sync
+     */
+    private fun getTwoWaySyncFolderFiles(): List<SyncFileInfo> {
+        val files = mutableListOf<SyncFileInfo>()
+        
+        try {
+            if (twoWaySyncFolderUri != null && context != null) {
+                // Handle DocumentFile-based two-way sync folder
+                val documentFile = DocumentFile.fromTreeUri(context, twoWaySyncFolderUri!!)
+                documentFile?.let { doc ->
+                    addTwoWaySyncDocumentFiles(doc, "", files)
+                }
+            } else if (twoWaySyncFolder != null && twoWaySyncFolder!!.exists()) {
+                // Handle File-based two-way sync folder
+                twoWaySyncFolder!!.walkTopDown().forEach { file ->
+                    if (file.isFile) {
+                        val relativePath = file.relativeTo(twoWaySyncFolder!!).path
+                        files.add(SyncFileInfo(
+                            name = file.name,
+                            size = file.length(),
+                            relativePath = relativePath
+                        ))
+                    }
+                }
+            } else {
+                Log.w(TAG, "No two-way sync folder selected - twoWaySyncFolder: $twoWaySyncFolder, twoWaySyncFolderUri: $twoWaySyncFolderUri")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting two-way sync folder files", e)
+        }
+        
+        return files
+    }
+
+    /**
+     * Add DocumentFile files recursively for two-way sync
+     */
+    private fun addTwoWaySyncDocumentFiles(documentFile: DocumentFile?, relativePath: String, files: MutableList<SyncFileInfo>) {
+        documentFile?.listFiles()?.forEach { file ->
+            if (file.isFile) {
+                val currentPath = if (relativePath.isEmpty()) file.name ?: "" else "$relativePath/${file.name}"
+                files.add(SyncFileInfo(
+                    name = file.name ?: "",
+                    size = file.length(),
+                    relativePath = currentPath
+                ))
+            } else if (file.isDirectory) {
+                val currentPath = if (relativePath.isEmpty()) file.name ?: "" else "$relativePath/${file.name}"
+                addTwoWaySyncDocumentFiles(file, currentPath, files)
+            }
+        }
+    }
+
+    /**
+     * Get file data for two-way sync
+     */
+    private fun getTwoWaySyncFile(relativePath: String): ByteArray? {
+        return try {
+            if (twoWaySyncFolderUri != null && context != null) {
+                // Handle DocumentFile-based folder for two-way sync
+                val documentFile = DocumentFile.fromTreeUri(context, twoWaySyncFolderUri!!)
+                val targetFile = findTwoWaySyncDocumentFile(documentFile, relativePath)
+                
+                if (targetFile != null) {
+                    context.contentResolver.openInputStream(targetFile.uri)?.use { input ->
+                        input.readBytes()
+                    }
+                } else {
+                    null
+                }
+            } else if (twoWaySyncFolder != null && twoWaySyncFolder!!.exists()) {
+                // Handle File-based folder for two-way sync
+                val targetFile = File(twoWaySyncFolder!!, relativePath)
+                
+                if (targetFile.exists()) {
+                    targetFile.readBytes()
+                } else {
+                    null
+                }
+            } else {
+                Log.w(TAG, "No two-way sync folder selected")
+                null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting two-way sync file: $relativePath", e)
+            null
+        }
+    }
+
+    /**
+     * Find DocumentFile by relative path
+     */
+    private fun findTwoWaySyncDocumentFile(documentFile: DocumentFile?, relativePath: String): DocumentFile? {
+        if (documentFile == null) return null
+        
+        val pathParts = relativePath.split("/")
+        var current = documentFile
+        
+        for (part in pathParts) {
+            current = current?.findFile(part)
+            if (current == null) break
+        }
+        
+        return current
+    }
+
+    /**
+     * Save received file for two-way sync
+     */
+    private fun saveTwoWaySyncFile(relativePath: String, fileData: ByteArray) {
+        try {
+            Log.d(TAG, "saveTwoWaySyncFile: Saving file with relativePath: '$relativePath'")
+            
+            var savedFile: File? = null
+            var displayPath = ""
+            
+            // Always save to cache first for immediate access
+            val fileName = File(relativePath).name
+            Log.d(TAG, "saveTwoWaySyncFile: Extracted fileName: '$fileName' from relativePath: '$relativePath'")
+            
+            val cacheFile = File(context?.cacheDir ?: File("/tmp"), fileName)
+            cacheFile.parentFile?.mkdirs()
+            cacheFile.writeBytes(fileData)
+            Log.d(TAG, "Saved two-way sync file to cache: ${cacheFile.absolutePath}")
+            
+            // Use two-way sync folder first (highest priority)
+            if (twoWaySyncFolderUri != null && context != null) {
+                // Handle DocumentFile-based two-way sync folder
+                val documentFile = DocumentFile.fromTreeUri(context, twoWaySyncFolderUri!!)
+                saveTwoWaySyncToDocumentFile(documentFile, relativePath, fileData)
+                Log.d(TAG, "Saved two-way sync file to URI folder: $relativePath")
+                
+                // Create a synthetic File for the FileMessage pointing to the target location
+                savedFile = File("/storage/emulated/0/TwoWaySync/$relativePath")
+                displayPath = "Two-Way Sync: ${documentFile?.name ?: "Selected Folder"}/"
+                
+            } else if (twoWaySyncFolder != null) {
+                // Handle File-based two-way sync folder
+                val targetFile = File(twoWaySyncFolder, relativePath)
+                targetFile.parentFile?.mkdirs()
+                targetFile.writeBytes(fileData)
+                
+                // Set proper permissions and scan for media store
+                setFilePermissions(targetFile)
+                scanFileForMediaStore(targetFile)
+                
+                Log.d(TAG, "Saved two-way sync file to File folder: ${targetFile.absolutePath}")
+                
+                savedFile = targetFile
+                displayPath = "Two-Way Sync: ${twoWaySyncFolder!!.name}/"
+                
+            } else if (customReceiveDirectoryUri != null && context != null) {
+                // Fallback to custom receive folder
+                val documentFile = DocumentFile.fromTreeUri(context, customReceiveDirectoryUri!!)
+                saveTwoWaySyncToDocumentFile(documentFile, relativePath, fileData)
+                Log.d(TAG, "Saved two-way sync file to custom URI folder: $relativePath")
+                
+                savedFile = File("/storage/emulated/0/CustomFolder/$relativePath")
+                displayPath = "Custom Folder/"
+                
+            } else {
+                // Fallback to default receive directory
+                val receiveDir = getCurrentReceiveDirectory()
+                val targetFile = File(receiveDir, relativePath)
+                targetFile.parentFile?.mkdirs()
+                targetFile.writeBytes(fileData)
+                
+                // Set proper permissions and scan for media store
+                setFilePermissions(targetFile)
+                scanFileForMediaStore(targetFile)
+                
+                Log.d(TAG, "Saved two-way sync file to default folder: ${targetFile.absolutePath}")
+                
+                savedFile = targetFile
+                displayPath = getDisplayPath(targetFile.absolutePath)
+            }
+            
+            // Create FileMessage entry for the received file
+            if (savedFile != null) {
+                val fileMessage = FileMessage(
+                    fileName = fileName,
+                    filePath = savedFile.absolutePath,
+                    fileSize = fileData.size.toLong(),
+                    mimeType = getMimeType(fileName),
+                    senderName = "Remote Device",
+                    senderAddress = "Unknown",
+                    isOutgoing = false,
+                    transferStatus = FileMessage.TransferStatus.COMPLETED,
+                    progress = 100,
+                    displayPath = displayPath
+                )
+                
+                addFileMessage(fileMessage)
+                Log.d(TAG, "Created FileMessage for two-way sync file: $fileName (Primary: ${savedFile.absolutePath}, Cache: ${cacheFile.absolutePath})")
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error saving two-way sync file: $relativePath", e)
+        }
+    }
+
+    /**
+     * Save file to DocumentFile for two-way sync
+     */
+    private fun saveTwoWaySyncToDocumentFile(documentFile: DocumentFile?, relativePath: String, fileData: ByteArray) {
+        if (documentFile == null || context == null) return
+        
+        try {
+            val pathParts = relativePath.split("/")
+            var current = documentFile
+            
+            // Navigate/create directory structure
+            for (i in 0 until pathParts.size - 1) {
+                val dirName = pathParts[i]
+                val existingDir = current?.findFile(dirName)
+                current = if (existingDir != null && existingDir.isDirectory) {
+                    existingDir
+                } else {
+                    current?.createDirectory(dirName)
+                }
+            }
+            
+            // Create/overwrite the file
+            val fileName = pathParts.last()
+            val mimeType = getMimeType(fileName) // Use proper MIME type instead of generic octet-stream
+            
+            val existingFile = current?.findFile(fileName)
+            val targetFile = if (existingFile != null) {
+                existingFile
+            } else {
+                current?.createFile(mimeType, fileName)
+            }
+            
+            targetFile?.let { file ->
+                context.contentResolver.openOutputStream(file.uri)?.use { output ->
+                    output.write(fileData)
+                }
+                
+                // Try to trigger media scan for DocumentFile by scanning the parent directory
+                triggerMediaScanForDocumentFile(file.uri)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error saving to document file for two-way sync", e)
+        }
+    }
+
+    /**
+     * Receive file to two-way sync folder using File system
+     */
+    private suspend fun receiveFileToTwoWaySync(inputStream: InputStream, fileName: String, fileSize: Long, messageId: String): File? = withContext(Dispatchers.IO) {
+        try {
+            // Use two-way sync folder and also save to cache
+            if (twoWaySyncFolder != null) {
+                Log.d(TAG, "Receiving two-way sync file with dual save: $fileName to ${twoWaySyncFolder!!.absolutePath}")
+                return@withContext receiveFileWithDualSave(inputStream, fileName, fileSize, messageId, 
+                    targetUri = null, targetFolder = twoWaySyncFolder!!)
+            } else {
+                Log.w(TAG, "No two-way sync folder selected, cannot receive file")
+                return@withContext null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error receiving two-way sync file: ${e.message}", e)
+            null
+        }
+    }
+
+    /**
+     * Trigger media scan for DocumentFile URIs
+     */
+    private fun triggerMediaScanForDocumentFile(uri: Uri) {
+        context?.let { ctx ->
+            try {
+                // For DocumentFile URIs, we can't directly scan the file,
+                // but we can trigger a general media scan
+                ctx.sendBroadcast(
+                    android.content.Intent(android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE).apply {
+                        data = uri
+                    }
+                )
+                Log.d(TAG, "Triggered media scan for DocumentFile URI: $uri")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to trigger media scan for DocumentFile URI: $uri", e)
+            }
+        }
+    }
+
+    /**
+     * Scan file to make it visible in file managers and media store
+     */
+    private fun scanFileForMediaStore(file: File) {
+        context?.let { ctx ->
+            try {
+                MediaScannerConnection.scanFile(
+                    ctx,
+                    arrayOf(file.absolutePath),
+                    null
+                ) { path, uri ->
+                    Log.d(TAG, "MediaScanner: File scanned and made visible: $path -> $uri")
+                }
+                Log.d(TAG, "Initiated media scan for file: ${file.absolutePath}")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to scan file for media store: ${file.absolutePath}", e)
+            }
+        }
+    }
+
+    /**
+     * Set proper file permissions to make it accessible
+     */
+    private fun setFilePermissions(file: File) {
+        try {
+            // Make file readable by others
+            file.setReadable(true, false)
+            file.setWritable(true, false)
+            Log.d(TAG, "Set file permissions for: ${file.absolutePath}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to set file permissions: ${file.absolutePath}", e)
+        }
     }
 }

@@ -49,7 +49,27 @@ data class FileMessage(
     }
 
     fun canBeOpened(): Boolean {
-        return transferStatus == TransferStatus.COMPLETED && filePath.isNotEmpty() && File(filePath).exists()
+        return transferStatus == TransferStatus.COMPLETED && filePath.isNotEmpty()
+    }
+    
+    /**
+     * Get the actual file that can be opened (checks both primary and cache locations)
+     */
+    fun getOpenableFile(cacheDir: java.io.File?): java.io.File? {
+        if (transferStatus != TransferStatus.COMPLETED || filePath.isEmpty()) return null
+        
+        // Check if the primary file exists and is readable
+        val primaryFile = File(filePath)
+        if (primaryFile.exists() && primaryFile.canRead()) return primaryFile
+        
+        // Check cache location (fallback for dual save implementation)
+        if (cacheDir != null) {
+            val cacheFileName = File(filePath).name
+            val cacheFile = File(cacheDir, cacheFileName)
+            if (cacheFile.exists() && cacheFile.canRead()) return cacheFile
+        }
+        
+        return null
     }
 
     fun getFileExtension(): String {

@@ -31,6 +31,7 @@ import com.example.p2psync.ui.P2PSyncViewModel
 import com.example.p2psync.ui.components.FileSharingScreen
 import com.example.p2psync.ui.components.FolderSharingScreen
 import com.example.p2psync.ui.components.SyncScreen
+import com.example.p2psync.ui.components.TwoWaySyncScreen
 import com.example.p2psync.ui.theme.P2PSyncTheme
 
 class MainActivity : ComponentActivity() {
@@ -89,6 +90,14 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
     val filesToSync by viewModel.filesToSync.collectAsState()
     val syncProgress by viewModel.syncProgress.collectAsState()
     
+    // Two-way sync state
+    val selectedLocalFolder by viewModel.selectedLocalFolder.collectAsState()
+    val selectedLocalFolderUri by viewModel.selectedLocalFolderUri.collectAsState()
+    val twoWaySyncStatus by viewModel.twoWaySyncStatus.collectAsState()
+    val filesToSyncToRemote by viewModel.filesToSyncToRemote.collectAsState()
+    val filesToSyncToLocal by viewModel.filesToSyncToLocal.collectAsState()
+    val twoWaySyncProgress by viewModel.twoWaySyncProgress.collectAsState()
+    
     // Navigation state
     var currentScreen by remember { mutableStateOf("devices") }
     var previousScreen by remember { mutableStateOf("devices") }
@@ -130,7 +139,7 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
     // Check and request file permissions when switching to file sharing or folder sharing
     LaunchedEffect(currentScreen) {
         // Request permissions for file/folder sharing screens
-        if ((currentScreen == "filesharing" || currentScreen == "foldersharing" || currentScreen == "sync") && !viewModel.checkFilePermissions()) {
+        if ((currentScreen == "filesharing" || currentScreen == "foldersharing" || currentScreen == "sync" || currentScreen == "twowaysync") && !viewModel.checkFilePermissions()) {
             val filePermissions = viewModel.getFilePermissions()
             if (filePermissions.isNotEmpty()) {
                 filePermissionLauncher.launch(filePermissions)
@@ -141,7 +150,7 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
     // Cleanup when switching screens
     LaunchedEffect(currentScreen) {
         // When leaving any feature screen, cleanup
-        if (previousScreen in listOf("filesharing", "foldersharing", "sync") && currentScreen != previousScreen) {
+        if (previousScreen in listOf("filesharing", "foldersharing", "sync", "twowaysync") && currentScreen != previousScreen) {
             // Stop server and clear state from previous screen
             viewModel.stopFileServer()
             viewModel.clearFileMessages()
@@ -160,6 +169,7 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                             "filesharing" -> "File Sharing"
                             "foldersharing" -> "Folder Sharing"
                             "sync" -> "One-Way Sync"
+                            "twowaysync" -> "Two-Way Sync"
                             else -> "P2P Sync"
                         },
                         style = MaterialTheme.typography.headlineMedium,
@@ -304,6 +314,36 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                 } else {
                     emptyList()
                 }
+            )
+            "twowaysync" -> TwoWaySyncScreen(
+                fileMessages = fileMessages,
+                isListening = isListening,
+                connectionStatus = messagingConnectionStatus,
+                isConnected = isConnected,
+                hostAddress = viewModel.getTargetAddress(),
+                transferProgress = fileTransferProgress,
+                selectedLocalFolder = selectedLocalFolder,
+                selectedLocalFolderUri = selectedLocalFolderUri,
+                twoWaySyncStatus = twoWaySyncStatus,
+                filesToSyncToRemote = filesToSyncToRemote,
+                filesToSyncToLocal = filesToSyncToLocal,
+                twoWaySyncProgress = twoWaySyncProgress,
+                onStartServer = { viewModel.startFileServer() },
+                onStopServer = { viewModel.stopFileServer() },
+                onSetSelectedLocalFolder = { folder -> viewModel.setSelectedLocalFolder(folder) },
+                onSetSelectedLocalFolderUri = { uri, name -> viewModel.setSelectedLocalFolderUri(uri, name) },
+                onStartTwoWayComparison = { viewModel.startTwoWayComparison() },
+                onStartTwoWaySync = { viewModel.startTwoWaySync() },
+                onRefreshClients = { viewModel.detectClientsForFolderSharing() },
+                onAnnouncePresence = { viewModel.detectClientsForFolderSharing() },
+                isGroupOwner = connectionInfo?.isGroupOwner == true,
+                connectedClients = if (connectionInfo?.isGroupOwner == true) {
+                    connectedClients
+                } else {
+                    emptyList()
+                },
+                onOpenFile = { fileMessage -> viewModel.openFile(fileMessage) },
+                onClearMessages = { viewModel.clearFileMessages() }
             )
         }
     }
@@ -605,7 +645,12 @@ fun FeatureNavigationCards(
                         )
                     }
                 }
-
+            }
+            
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 // One-Way Sync Card
                 Card(
                     modifier = Modifier
@@ -631,6 +676,36 @@ fun FeatureNavigationCards(
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium,
                             color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                // Two-Way Sync Card
+                Card(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onNavigateToFeature("twowaysync") },
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SyncAlt,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.size(32.dp)
+                        )
+                        Text(
+                            "Two-Way Sync",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
                             textAlign = TextAlign.Center
                         )
                     }
