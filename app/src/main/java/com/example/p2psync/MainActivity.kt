@@ -215,6 +215,7 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                 }
             )
             "filesharing" -> FileSharingScreen(
+                paddingValues = paddingValues,
                 fileMessages = fileMessages,
                 isListening = isListening,
                 connectionStatus = messagingConnectionStatus,
@@ -251,6 +252,7 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                 }
             )
             "foldersharing" -> FolderSharingScreen(
+                paddingValues = paddingValues,
                 fileMessages = fileMessages,
                 isListening = isListening,
                 connectionStatus = messagingConnectionStatus,
@@ -288,6 +290,7 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                 }
             )
             "sync" -> SyncScreen(
+                paddingValues = paddingValues,
                 isListening = isListening,
                 connectionStatus = messagingConnectionStatus,
                 isConnected = isConnected,
@@ -316,6 +319,7 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                 }
             )
             "twowaysync" -> TwoWaySyncScreen(
+                paddingValues = paddingValues,
                 fileMessages = fileMessages,
                 isListening = isListening,
                 connectionStatus = messagingConnectionStatus,

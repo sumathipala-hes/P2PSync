@@ -8,6 +8,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -35,6 +37,7 @@ import java.io.File
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FolderSharingScreen(
+    paddingValues: PaddingValues,
     fileMessages: List<FileMessage>,
     isListening: Boolean,
     connectionStatus: String,
@@ -119,13 +122,17 @@ fun FolderSharingScreen(
     }
 
     Column(
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(paddingValues)
+            .padding(horizontal = 16.dp)
+            .verticalScroll(rememberScrollState())
     ) {
         // Status Card
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(bottom = 16.dp),
             elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
         ) {
             Column(
