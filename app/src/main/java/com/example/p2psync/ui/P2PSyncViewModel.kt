@@ -816,10 +816,12 @@ class P2PSyncViewModel(application: Application) : AndroidViewModel(application)
                 getAbsolutePathFromUri(it)
             } ?: "Selected Folder"
             _folderTransferStatus.value = "Receive destination: $folderPath"
-            // Set the custom receive directory URI in the file messaging service
+            // Set the custom receive directory in the file messaging service
+            fileMessaging.setCustomReceiveDirectory(folder)
             fileMessaging.setCustomReceiveDirectoryUri(uri)
         } else {
             // Clear custom receive directory
+            fileMessaging.setCustomReceiveDirectory(null)
             fileMessaging.setCustomReceiveDirectoryUri(null)
         }
     }

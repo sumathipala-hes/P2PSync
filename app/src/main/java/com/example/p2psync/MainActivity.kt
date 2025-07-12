@@ -249,6 +249,11 @@ fun P2PSyncApp(viewModel: P2PSyncViewModel = viewModel()) {
                 },
                 onAnnouncePresence = {
                     viewModel.sendClientHello()
+                },
+                selectedReceiveFolder = selectedReceiveFolder,
+                selectedReceiveFolderUri = selectedReceiveFolderUri,
+                onSetSelectedReceiveFolder = { folder, uri ->
+                    viewModel.setSelectedReceiveFolder(folder, uri)
                 }
             )
             "foldersharing" -> FolderSharingScreen(
