@@ -35,7 +35,6 @@ import java.io.File
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FolderSharingScreen(
-    paddingValues: PaddingValues,
     fileMessages: List<FileMessage>,
     isListening: Boolean,
     connectionStatus: String,
@@ -120,16 +119,13 @@ fun FolderSharingScreen(
     }
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(paddingValues)
-            .padding(horizontal = 16.dp)
+        modifier = Modifier.fillMaxSize()
     ) {
         // Status Card
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 16.dp),
+                .padding(16.dp),
             elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
         ) {
             Column(

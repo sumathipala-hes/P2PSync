@@ -237,53 +237,6 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
     }
 
     /**
-     * Send file with custom filename (preserves original name for DocumentFile scenarios)
-     */
-    suspend fun sendFile(
-        file: File,
-        hostAddress: String,
-        senderName: String,
-        senderAddress: String,
-        originalFileName: String
-    ): Result<FileMessage> = withContext(Dispatchers.IO) {
-        try {
-            Log.d(TAG, "Attempting to send file: $originalFileName (temp: ${file.name}) to $hostAddress")
-            Log.d(TAG, "File exists: ${file.exists()}, File size: ${file.length()}")
-            
-            val fileMessage = FileMessage(
-                fileName = originalFileName, // Use original name instead of temp file name
-                filePath = file.absolutePath,
-                fileSize = file.length(),
-                mimeType = getMimeType(originalFileName), // Use original name for MIME type
-                senderName = senderName,
-                senderAddress = senderAddress,
-                isOutgoing = true,
-                transferStatus = FileMessage.TransferStatus.TRANSFERRING
-            )
-
-            // Add to messages list immediately
-            addFileMessage(fileMessage)
-            updateTransferProgress(fileMessage.id, 0)
-
-            // Send file using the original name
-            val success = sendFileToHost(hostAddress, file, fileMessage.copy(fileName = originalFileName))
-
-            if (success) {
-                updateFileMessageStatus(fileMessage.id, FileMessage.TransferStatus.COMPLETED, 100)
-                Log.d(TAG, "File sent successfully: $originalFileName")
-                Result.success(fileMessage.copy(fileName = originalFileName))
-            } else {
-                updateFileMessageStatus(fileMessage.id, FileMessage.TransferStatus.FAILED, 0)
-                Log.e(TAG, "Failed to send file: $originalFileName")
-                Result.failure(Exception("Failed to send file"))
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error sending file: $originalFileName", e)
-            Result.failure(e)
-        }
-    }
-
-    /**
      * Handle incoming file connection
      */
     private suspend fun handleFileConnection(socket: Socket, clientAddress: String) = withContext(Dispatchers.IO) {
@@ -460,23 +413,15 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
                                 val fileData = getTwoWaySyncFile(relativePath)
                                 
                                 if (fileData != null) {
-                                    val responseHeader = "TWOWAY_SYNC_FILE_RESPONSE$METADATA_SEPARATOR${fileData.size}\n"
-                                    val fullResponse = responseHeader.toByteArray(Charsets.UTF_8) + fileData
-                                    
-                                    // Send response length first
-                                    val lengthBuffer = java.nio.ByteBuffer.allocate(4).putInt(fullResponse.size).array()
-                                    outputStream.write(lengthBuffer)
-                                    outputStream.write(fullResponse)
+                                    val response = "TWOWAY_SYNC_FILE_RESPONSE$METADATA_SEPARATOR${fileData.size}\n"
+                                    outputStream.write(response.toByteArray())
+                                    outputStream.write(fileData)
                                     outputStream.flush()
                                     
-                                    Log.d(TAG, "Sent two-way sync file: $relativePath (${fileData.size} bytes)")
+                                    Log.d(TAG, "Sent two-way sync file: $relativePath")
                                 } else {
-                                    val errorResponse = "TWOWAY_SYNC_FILE_ERROR\n".toByteArray(Charsets.UTF_8)
-                                    val lengthBuffer = java.nio.ByteBuffer.allocate(4).putInt(errorResponse.size).array()
-                                    outputStream.write(lengthBuffer)
-                                    outputStream.write(errorResponse)
+                                    outputStream.write("TWOWAY_SYNC_FILE_ERROR\n".toByteArray())
                                     outputStream.flush()
-                                    Log.w(TAG, "Two-way sync file not found: $relativePath")
                                 }
                             }
                         } catch (e: Exception) {
@@ -592,8 +537,8 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
                 val outputStream = socket.getOutputStream()
                 val inputStream = socket.getInputStream()
                 
-                // Prepare metadata using the original filename from fileMessage
-                val metadata = "${fileMessage.fileName}$METADATA_SEPARATOR${file.length()}$METADATA_SEPARATOR${getMimeType(fileMessage.fileName)}$METADATA_SEPARATOR${fileMessage.senderName}$METADATA_SEPARATOR${fileMessage.senderAddress}"
+                // Prepare metadata
+                val metadata = "${file.name}$METADATA_SEPARATOR${file.length()}$METADATA_SEPARATOR${getMimeType(file.name)}$METADATA_SEPARATOR${fileMessage.senderName}$METADATA_SEPARATOR${fileMessage.senderAddress}"
                 val metadataBytes = metadata.toByteArray(Charsets.UTF_8)
                 
                 // Send metadata length first (4 bytes)
@@ -1348,70 +1293,6 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
     }
 
     /**
-     * Send file to all connected clients (group owner broadcast) with original filename
-     */
-    suspend fun sendFileToAllClients(
-        file: File,
-        senderName: String,
-        senderAddress: String,
-        originalFileName: String
-    ): Result<List<FileMessage>> = withContext(Dispatchers.IO) {
-        try {
-            val activeClientIPs = getAllActiveClientIPs()
-            
-            if (activeClientIPs.isEmpty()) {
-                Log.w(TAG, "No active clients to send file to")
-                return@withContext Result.failure(Exception("No clients connected"))
-            }
-
-            Log.d(TAG, "Broadcasting file $originalFileName (temp: ${file.name}) to ${activeClientIPs.size} clients: $activeClientIPs")
-
-            val results = mutableListOf<FileMessage>()
-            val errors = mutableListOf<Exception>()
-
-            // Send to each client sequentially to avoid overwhelming the connection
-            for (clientIP in activeClientIPs) {
-                try {
-                    val result = sendFile(
-                        file = file,
-                        hostAddress = clientIP,
-                        senderName = senderName,
-                        senderAddress = senderAddress,
-                        originalFileName = originalFileName
-                    )
-                    
-                    if (result.isSuccess) {
-                        result.getOrNull()?.let { results.add(it) }
-                        Log.d(TAG, "Successfully sent file to client: $clientIP")
-                    } else {
-                        val throwable = result.exceptionOrNull()
-                        val error = if (throwable is Exception) throwable else Exception("Unknown error sending to $clientIP: ${throwable?.message}")
-                        errors.add(error)
-                        Log.e(TAG, "Failed to send file to client $clientIP: ${error.message}")
-                    }
-                } catch (e: Exception) {
-                    errors.add(e)
-                    Log.e(TAG, "Exception sending file to client $clientIP: ${e.message}")
-                }
-            }
-
-            // Return success if we sent to at least one client
-            if (results.isNotEmpty()) {
-                Log.d(TAG, "Successfully sent file to ${results.size}/${activeClientIPs.size} clients")
-                Result.success(results)
-            } else {
-                val combinedError = Exception("Failed to send file to any clients. Errors: ${errors.map { it.message }}")
-                Log.e(TAG, "Failed to send file to all clients: ${combinedError.message}")
-                Result.failure(combinedError)
-            }
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in sendFileToAllClients: ${e.message}", e)
-            Result.failure(e)
-        }
-    }
-
-    /**
      * Detect potential clients in the WiFi Direct network
      * This helps identify clients even before they connect to the file server
      */
@@ -1986,82 +1867,43 @@ class P2PFileMessaging(private val context: android.content.Context? = null) {
     /**
      * Request a file for two-way sync
      */
-    suspend fun requestTwoWaySyncFile(relativePath: String, targetAddress: String): Result<ByteArray> = withContext(Dispatchers.IO) {
+    suspend fun requestTwoWaySyncFile(relativePath: String): Result<ByteArray> = withContext(Dispatchers.IO) {
         try {
-            Log.d(TAG, "Requesting two-way sync file '$relativePath' from $targetAddress")
+            val connectedClient = activeConnections.values.firstOrNull()
+            if (connectedClient == null) {
+                return@withContext Result.failure(Exception("No connected client"))
+            }
 
-            Socket().use { socket ->
-                socket.connect(InetSocketAddress(targetAddress, FILE_PORT), CONNECTION_TIMEOUT)
-                
-                val outputStream = socket.getOutputStream()
-                val inputStream = socket.getInputStream()
+            val output = connectedClient.getOutputStream()
+            val input = connectedClient.getInputStream()
 
-                // Send request for specific file
-                val requestMessage = "REQUEST_TWOWAY_SYNC_FILE${METADATA_SEPARATOR}$relativePath"
-                val messageBytes = requestMessage.toByteArray(Charsets.UTF_8)
-                
-                // Send message length first
-                val lengthBuffer = java.nio.ByteBuffer.allocate(4).putInt(messageBytes.size).array()
-                outputStream.write(lengthBuffer)
-                outputStream.write(messageBytes)
-                outputStream.flush()
+            // Send request for specific file
+            output.write("REQUEST_TWOWAY_SYNC_FILE${METADATA_SEPARATOR}$relativePath\n".toByteArray())
+            output.flush()
 
-                Log.d(TAG, "Sent two-way sync file request for: $relativePath")
-
-                // Read response length
-                val responseLengthBuffer = ByteArray(4)
-                val lengthBytesRead = inputStream.read(responseLengthBuffer)
-                if (lengthBytesRead != 4) {
-                    throw Exception("Could not read response length")
-                }
-
-                val responseLength = java.nio.ByteBuffer.wrap(responseLengthBuffer).int
-                if (responseLength <= 0 || responseLength > 100 * 1024 * 1024) { // Max 100MB per file
-                    throw Exception("Invalid response length: $responseLength")
-                }
-
-                // Read response data
-                val responseBuffer = ByteArray(responseLength)
-                var totalRead = 0
-                while (totalRead < responseLength) {
-                    val bytesRead = inputStream.read(responseBuffer, totalRead, responseLength - totalRead)
-                    if (bytesRead == -1) break
-                    totalRead += bytesRead
-                }
-
-                if (totalRead != responseLength) {
-                    throw Exception("Could not read complete response")
-                }
-
-                val responseString = String(responseBuffer, Charsets.UTF_8)
-                Log.d(TAG, "Received two-way sync file response: ${responseString.take(100)}...")
-
-                // Parse response
-                if (responseString.startsWith("TWOWAY_SYNC_FILE_RESPONSE")) {
-                    val parts = responseString.substringBefore("\n").split(METADATA_SEPARATOR)
-                    if (parts.size >= 2) {
-                        val fileSize = parts[1].toLongOrNull() ?: 0L
-                        
-                        // The file data comes after the header line
-                        val headerEnd = responseString.indexOf('\n') + 1
-                        val fileData = responseBuffer.sliceArray(headerEnd until responseBuffer.size)
-                        
-                        if (fileData.size == fileSize.toInt()) {
-                            // Save the received file
-                            saveTwoWaySyncFile(relativePath, fileData)
-                            Log.d(TAG, "Successfully received two-way sync file: $relativePath (${fileData.size} bytes)")
-                            Result.success(fileData)
-                        } else {
-                            Log.w(TAG, "File size mismatch: expected $fileSize, got ${fileData.size}")
-                            Result.failure(Exception("File size mismatch"))
-                        }
-                    } else {
-                        Result.failure(Exception("Invalid file response format"))
+            // Read response header
+            val response = input.bufferedReader().readLine()
+            if (response?.startsWith("TWOWAY_SYNC_FILE_RESPONSE") == true) {
+                val parts = response.split(METADATA_SEPARATOR)
+                if (parts.size >= 2) {
+                    val fileSize = parts[1].toLongOrNull() ?: 0L
+                    
+                    // Read file content
+                    val fileData = ByteArray(fileSize.toInt())
+                    var totalRead = 0
+                    
+                    while (totalRead < fileSize) {
+                        val bytesRead = input.read(fileData, totalRead, (fileSize - totalRead).toInt())
+                        if (bytesRead == -1) break
+                        totalRead += bytesRead
                     }
+                    
+                    Result.success(fileData)
                 } else {
-                    Log.e(TAG, "Invalid response or file not found: ${responseString.take(100)}")
-                    Result.failure(Exception("File not found or error on remote"))
+                    Result.failure(Exception("Invalid file response format"))
                 }
+            } else {
+                Result.failure(Exception("File not found or error on remote"))
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error requesting two-way sync file: $relativePath", e)

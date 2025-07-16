@@ -14,8 +14,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -36,7 +34,6 @@ import java.io.File
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FileSharingScreen(
-    paddingValues: PaddingValues,
     fileMessages: List<FileMessage>,
     isListening: Boolean,
     connectionStatus: String,
@@ -55,10 +52,7 @@ fun FileSharingScreen(
     connectedClients: List<String> = emptyList(),
     onSendToAllClients: (File) -> Unit = {},
     onDebugClients: () -> Unit = {},
-    onAnnouncePresence: () -> Unit = {},
-    selectedReceiveFolder: File? = null,
-    selectedReceiveFolderUri: Uri? = null,
-    onSetSelectedReceiveFolder: (File?, Uri?) -> Unit = { _, _ -> }
+    onAnnouncePresence: () -> Unit = {}
 ) {
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
@@ -89,23 +83,6 @@ fun FileSharingScreen(
         }
     }
 
-    // Folder picker launcher for receive mode
-    val receiveFolderPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri ->
-        uri?.let { folderUri ->
-            try {
-                val documentFile = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, folderUri)
-                documentFile?.let { doc ->
-                    val folderName = doc.name ?: "Selected Folder"
-                    onSetSelectedReceiveFolder(null, folderUri)
-                }
-            } catch (e: Exception) {
-                // Handle error
-            }
-        }
-    }
-
     // Auto-scroll to bottom when new messages arrive
     LaunchedEffect(fileMessages.size) {
         if (fileMessages.isNotEmpty()) {
@@ -116,16 +93,13 @@ fun FileSharingScreen(
     }
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(paddingValues)
-            .padding(horizontal = 16.dp)
+        modifier = Modifier.fillMaxSize()
     ) {
         // Status Card
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 16.dp),
+                .padding(16.dp),
             elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
         ) {
             Column(
@@ -238,7 +212,7 @@ fun FileSharingScreen(
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 16.dp),
+                    .padding(horizontal = 16.dp),
                 elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
             ) {
                 Column(
@@ -376,7 +350,7 @@ fun FileSharingScreen(
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 16.dp),
+                .padding(horizontal = 16.dp),
             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
         ) {
             Column(
@@ -575,7 +549,8 @@ fun FileSharingScreen(
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f),
+                .weight(1f)
+                .padding(16.dp),
             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
         ) {
             Column {
@@ -640,7 +615,7 @@ fun FileSharingScreen(
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 16.dp),
+                    .padding(16.dp),
                 elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
             ) {
                 Row(
@@ -662,101 +637,6 @@ fun FileSharingScreen(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Select File to Send")
-                    }
-                }
-            }
-        }
-
-        // Receive Folder Selection (only shown in receive mode)
-        if (currentMode == "receive") {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 16.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text(
-                        "Receive Destination",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    
-                    // Show selected receive folder
-                    if (selectedReceiveFolder != null || selectedReceiveFolderUri != null) {
-                        Card(
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.primaryContainer
-                            )
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Folder,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
-                                Column(
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text(
-                                        text = selectedReceiveFolder?.name 
-                                            ?: androidx.documentfile.provider.DocumentFile.fromTreeUri(context, selectedReceiveFolderUri!!)?.name 
-                                            ?: "Selected Folder",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.Medium,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                                    )
-                                    Text(
-                                        text = "Files will be saved here",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                                    )
-                                }
-                                OutlinedButton(
-                                    onClick = { receiveFolderPickerLauncher.launch(null) },
-                                    colors = ButtonDefaults.outlinedButtonColors(
-                                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                    ),
-                                    border = androidx.compose.foundation.BorderStroke(
-                                        1.dp, 
-                                        MaterialTheme.colorScheme.onPrimaryContainer
-                                    )
-                                ) {
-                                    Text("Change", style = MaterialTheme.typography.bodySmall)
-                                }
-                            }
-                        }
-                    } else {
-                        // Show select folder button
-                        OutlinedButton(
-                            onClick = { receiveFolderPickerLauncher.launch(null) },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.FolderOpen,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Select Destination Folder")
-                        }
-                        
-                        Text(
-                            text = "Choose where received files will be saved",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
-                        )
                     }
                 }
             }
@@ -988,20 +868,20 @@ fun FileMessageItem(
 }
 
 /**
- * Helper function to get a File from a URI with preserved original filename
+ * Helper function to get a File from a URI
  */
 private fun getFileFromUri(context: Context, uri: Uri): File? {
     return try {
         val fileName = getFileName(context, uri) ?: "shared_file"
-        
-        // Read file data
-        val fileData = context.contentResolver.openInputStream(uri)?.use { inputStream ->
-            inputStream.readBytes()
-        } ?: return null
-        
-        // Use FolderUtils to create temp file with original name
-        com.example.p2psync.utils.FolderUtils.createTempFileWithOriginalName(context, fileName, fileData)
-        
+        val tempFile = File.createTempFile("shared_", "_$fileName", context.cacheDir)
+
+        context.contentResolver.openInputStream(uri)?.use { inputStream ->
+            tempFile.outputStream().use { outputStream ->
+                inputStream.copyTo(outputStream)
+            }
+        }
+
+        tempFile
     } catch (e: Exception) {
         null
     }
