@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- External files directory -->
+    <external-files-path name="external_files" path="." />
+    <!-- Cache directory for received files -->
+    <cache-path name="cache" path="." />
+    <!-- App-specific external directory -->
+    <external-path name="external_path" path="Android/data/com.example.p2psync/files/" />
+    <!-- Public Downloads directory -->
+    <external-path name="downloads" path="Download/" />
+</paths>
